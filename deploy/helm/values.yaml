@@ -27,9 +27,9 @@ app:
 
     # Connection management
     poolMode: "session" # session, statement, transaction
-    defaultPoolSize: 20
-    maxClientConn: 100
     minPoolSize: 5
+    maxPoolSize: 20
+    maxClientConn: 100
 
     # TLS configuration
     tls:
@@ -47,14 +47,6 @@ app:
       maxBsonObjectSize: 16777216
       enableRetryableWrites: true
       enableRetryableReads: true
-
-    # Dynamic configuration
-    dynamic:
-      enabled: true
-      configReloadInterval: "30s"
-      managementPort: 8080
-      managementEnabled: true
-      readOnlyMode: false
 
     # Performance tuning
     performance:

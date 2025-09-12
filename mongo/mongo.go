@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"net"
 	"reflect"
+	"strings"
 	"sync"
 	"time"
 	"unsafe"
@@ -34,6 +35,7 @@ type Mongo struct {
 	topology     *topology.Topology
 	cursors      *cursorCache
 	transactions *transactionCache
+	databaseName string // Database name from connection string
 
 	roundTripCtx    context.Context
 	roundTripCancel func()
@@ -44,6 +46,32 @@ func extractTopology(c *mongo.Client) *topology.Topology {
 	d := e.FieldByName("deployment")
 	d = reflect.NewAt(d.Type(), unsafe.Pointer(d.UnsafeAddr())).Elem() // #nosec G103
 	return d.Interface().(*topology.Topology)
+}
+
+func extractDatabaseName(opts *options.ClientOptions) string {
+	// Extract database name from connection string
+	uri := opts.GetURI()
+	if uri == "" {
+		return "default"
+	}
+
+	// Parse the URI to extract database name
+	// Format: mongodb://[username:password@]host[:port]/database[?options]
+	if strings.Contains(uri, "/") {
+		parts := strings.Split(uri, "/")
+		if len(parts) >= 2 {
+			dbPart := parts[len(parts)-1]
+			// Remove query parameters
+			if strings.Contains(dbPart, "?") {
+				dbPart = strings.Split(dbPart, "?")[0]
+			}
+			if dbPart != "" {
+				return dbPart
+			}
+		}
+	}
+
+	return "default"
 }
 
 func Connect(log *zap.Logger, metrics *util.MetricsClient, opts *options.ClientOptions, ping bool) (*Mongo, error) {
@@ -71,6 +99,7 @@ func Connect(log *zap.Logger, metrics *util.MetricsClient, opts *options.ClientO
 	go topologyMonitor(log, t)
 
 	rtCtx, rtCancel := context.WithCancel(context.Background())
+	databaseName := extractDatabaseName(opts)
 	m := Mongo{
 		log:             log,
 		metrics:         metrics,
@@ -79,6 +108,7 @@ func Connect(log *zap.Logger, metrics *util.MetricsClient, opts *options.ClientO
 		topology:        t,
 		cursors:         newCursorCache(),
 		transactions:    newTransactionCache(),
+		databaseName:    databaseName,
 		roundTripCtx:    rtCtx,
 		roundTripCancel: rtCancel,
 	}
@@ -89,6 +119,20 @@ func Connect(log *zap.Logger, metrics *util.MetricsClient, opts *options.ClientO
 
 func (m *Mongo) Description() description.Topology {
 	return m.topology.Description()
+}
+
+func (m *Mongo) DatabaseName() string {
+	return m.databaseName
+}
+
+// GetClientOptions returns the client options used to create this MongoDB client
+func (m *Mongo) GetClientOptions() *options.ClientOptions {
+	return m.opts
+}
+
+// SetClientOptions sets the client options (for testing purposes)
+func (m *Mongo) SetClientOptions(opts *options.ClientOptions) {
+	m.opts = opts
 }
 
 func (m *Mongo) cacheGauge(name string, count float64) {
@@ -158,11 +202,62 @@ func (m *Mongo) RoundTrip(msg *Message, tags []string) (_ *Message, err error) {
 	transactionDetails := msg.Op.TransactionDetails()
 	server, err := m.selectServer(requestCursorID, collection, transactionDetails)
 	if err != nil {
+		// Record server selection error
+		if m.metrics != nil {
+			// Extract database name from collection
+			databaseName := "default"
+			if collection != "" {
+				parts := strings.SplitN(collection, ".", 2)
+				if len(parts) >= 2 {
+					databaseName = parts[0]
+				}
+			}
+			errorTags := []string{
+				fmt.Sprintf("database:%s", databaseName),
+				fmt.Sprintf("error_type:%s", "server_selection_error"),
+			}
+			_ = m.metrics.Incr("error", errorTags, 1)
+		}
 		return nil, err
+	}
+
+	// Record server selection success
+	if m.metrics != nil {
+		// Extract database name from the operation
+		databaseName := "default"
+		if msg.Op != nil {
+			// Try to extract database name from the operation
+			if dbName := msg.Op.DatabaseName(); dbName != "" {
+				databaseName = dbName
+			} else if collection != "" {
+				// Fallback to collection name parsing
+				parts := strings.SplitN(collection, ".", 2)
+				if len(parts) >= 2 {
+					databaseName = parts[0]
+				}
+			}
+		}
+		_ = m.metrics.Incr("server_selection", []string{fmt.Sprintf("database:%s", databaseName)}, 1)
 	}
 
 	conn, err := m.checkoutConnection(server)
 	if err != nil {
+		// Record connection checkout error
+		if m.metrics != nil {
+			// Extract database name from collection
+			databaseName := "default"
+			if collection != "" {
+				parts := strings.SplitN(collection, ".", 2)
+				if len(parts) >= 2 {
+					databaseName = parts[0]
+				}
+			}
+			errorTags := []string{
+				fmt.Sprintf("database:%s", databaseName),
+				fmt.Sprintf("error_type:%s", "connection_checkout_error"),
+			}
+			_ = m.metrics.Incr("error", errorTags, 1)
+		}
 		return nil, err
 	}
 
@@ -210,8 +305,44 @@ func (m *Mongo) RoundTrip(msg *Message, tags []string) (_ *Message, err error) {
 	if responseCursorID, ok := op.CursorID(); ok {
 		if responseCursorID != 0 {
 			m.cursors.add(responseCursorID, collection, server)
+			// Record cursor opened
+			if m.metrics != nil {
+				// Extract database name from the operation
+				databaseName := "default"
+				if msg.Op != nil {
+					// Try to extract database name from the operation
+					if dbName := msg.Op.DatabaseName(); dbName != "" {
+						databaseName = dbName
+					} else if collection != "" {
+						// Fallback to collection name parsing
+						parts := strings.SplitN(collection, ".", 2)
+						if len(parts) >= 2 {
+							databaseName = parts[0]
+						}
+					}
+				}
+				_ = m.metrics.Incr("cursor_opened", []string{fmt.Sprintf("database:%s", databaseName)}, 1)
+			}
 		} else if requestCursorID != 0 {
 			m.cursors.remove(requestCursorID, collection)
+			// Record cursor closed
+			if m.metrics != nil {
+				// Extract database name from the operation
+				databaseName := "default"
+				if msg.Op != nil {
+					// Try to extract database name from the operation
+					if dbName := msg.Op.DatabaseName(); dbName != "" {
+						databaseName = dbName
+					} else if collection != "" {
+						// Fallback to collection name parsing
+						parts := strings.SplitN(collection, ".", 2)
+						if len(parts) >= 2 {
+							databaseName = parts[0]
+						}
+					}
+				}
+				_ = m.metrics.Incr("cursor_closed", []string{fmt.Sprintf("database:%s", databaseName)}, 1)
+			}
 		}
 	}
 
@@ -222,6 +353,29 @@ func (m *Mongo) RoundTrip(msg *Message, tags []string) (_ *Message, err error) {
 			if requestCommand == AbortTransaction || requestCommand == CommitTransaction {
 				m.log.Debug("Removing transaction from the cache", zap.String("reqCommand", string(requestCommand)))
 				m.transactions.remove(transactionDetails.LsID)
+
+				// Record transaction metrics
+				if m.metrics != nil {
+					// Extract database name from the operation
+					databaseName := "default"
+					if msg.Op != nil {
+						// Try to extract database name from the operation
+						if dbName := msg.Op.DatabaseName(); dbName != "" {
+							databaseName = dbName
+						} else if collection != "" {
+							// Fallback to collection name parsing
+							parts := strings.SplitN(collection, ".", 2)
+							if len(parts) >= 2 {
+								databaseName = parts[0]
+							}
+						}
+					}
+					if requestCommand == CommitTransaction {
+						_ = m.metrics.Incr("transaction_committed", []string{fmt.Sprintf("database:%s", databaseName)}, 1)
+					} else if requestCommand == AbortTransaction {
+						_ = m.metrics.Incr("transaction_aborted", []string{fmt.Sprintf("database:%s", databaseName)}, 1)
+					}
+				}
 			}
 		}
 	}

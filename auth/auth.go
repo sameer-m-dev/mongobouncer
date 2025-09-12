@@ -19,10 +19,10 @@ import (
 type AuthType string
 
 const (
-	AuthTypeTrust      AuthType = "trust"
-	AuthTypeMD5        AuthType = "md5"
+	AuthTypeTrust       AuthType = "trust"
+	AuthTypeMD5         AuthType = "md5"
 	AuthTypeSCRAMSHA256 AuthType = "scram-sha-256"
-	AuthTypeCert       AuthType = "cert"
+	AuthTypeCert        AuthType = "cert"
 )
 
 // Manager handles user authentication and authorization
@@ -106,7 +106,7 @@ func (m *Manager) loadAuthFile() error {
 	for scanner.Scan() {
 		lineNum++
 		line := strings.TrimSpace(scanner.Text())
-		
+
 		// Skip empty lines and comments
 		if line == "" || strings.HasPrefix(line, "#") {
 			continue
@@ -150,6 +150,11 @@ func (m *Manager) loadAuthFile() error {
 // parseAuthLine parses a line from the auth file
 // Format: "username" "password_hash" "extra_info"
 func (m *Manager) parseAuthLine(line string) (*User, error) {
+	// Check if line starts with quotes (required format)
+	if !strings.HasPrefix(line, `"`) {
+		return nil, errors.New("auth line must start with quoted username")
+	}
+
 	// Simple parser for quoted strings
 	parts := make([]string, 0, 3)
 	inQuote := false
@@ -186,6 +191,11 @@ func (m *Manager) parseAuthLine(line string) (*User, error) {
 
 	if len(parts) < 2 {
 		return nil, errors.New("invalid auth line format")
+	}
+
+	// Validate that we have proper quoted strings
+	if parts[0] == "" || parts[1] == "" {
+		return nil, errors.New("username and password cannot be empty")
 	}
 
 	user := &User{
@@ -296,7 +306,7 @@ func (m *Manager) verifyMD5(username, password, storedHash string) error {
 func (m *Manager) verifySCRAMSHA256(username, password, storedHash string) error {
 	// This is a simplified version - real SCRAM-SHA-256 is more complex
 	// In production, you'd use the MongoDB driver's SCRAM implementation
-	
+
 	// For now, we'll do a simple SHA-256 comparison
 	h := sha256.New()
 	h.Write([]byte(password))

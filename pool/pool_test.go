@@ -8,16 +8,20 @@ import (
 
 	"github.com/stretchr/testify/assert"
 	"go.uber.org/zap"
+
+	"github.com/sameer-m-dev/mongobouncer/util"
 )
 
 func TestPoolManager(t *testing.T) {
 	logger := zap.NewNop()
+	metrics, _ := util.NewMetricsClient(logger, "localhost:9090")
 
 	t.Run("CreateManager", func(t *testing.T) {
-		m := NewManager(logger, "session", 20, 5, 100)
+		m := NewManager(logger, metrics, "session", 5, 20, 5, 100)
 		assert.NotNil(t, m)
 		assert.Equal(t, SessionMode, m.defaultMode)
-		assert.Equal(t, 20, m.defaultSize)
+		assert.Equal(t, 5, m.minPoolSize)
+		assert.Equal(t, 20, m.maxPoolSize)
 		assert.Equal(t, 5, m.reserveSize)
 		assert.Equal(t, 100, m.maxClientConn)
 	})
@@ -34,13 +38,13 @@ func TestPoolManager(t *testing.T) {
 		}
 
 		for _, tt := range tests {
-			m := NewManager(logger, tt.mode, 10, 2, 50)
+			m := NewManager(logger, metrics, tt.mode, 5, 10, 2, 50)
 			assert.Equal(t, tt.expected, m.defaultMode)
 		}
 	})
 
 	t.Run("GetPool", func(t *testing.T) {
-		m := NewManager(logger, "session", 10, 2, 50)
+		m := NewManager(logger, metrics, "session", 5, 10, 2, 50)
 
 		// Get pool for database
 		pool1 := m.GetPool("db1", nil, SessionMode, 20)
@@ -60,7 +64,7 @@ func TestPoolManager(t *testing.T) {
 	})
 
 	t.Run("ClientRegistration", func(t *testing.T) {
-		m := NewManager(logger, "session", 10, 2, 2) // Max 2 clients
+		m := NewManager(logger, metrics, "session", 5, 10, 2, 2) // Max 2 clients
 
 		// Register clients
 		client1, err := m.RegisterClient("client1", "user1", "db1", SessionMode)
@@ -88,9 +92,10 @@ func TestPoolManager(t *testing.T) {
 
 func TestConnectionPool(t *testing.T) {
 	logger := zap.NewNop()
+	metrics, _ := util.NewMetricsClient(logger, "localhost:9090")
 
 	t.Run("CheckoutReturn", func(t *testing.T) {
-		m := NewManager(logger, "session", 2, 1, 10)
+		m := NewManager(logger, metrics, "session", 1, 2, 1, 10)
 		pool := m.GetPool("test", nil, SessionMode, 2)
 
 		// Checkout connection
@@ -112,7 +117,7 @@ func TestConnectionPool(t *testing.T) {
 	})
 
 	t.Run("PoolLimit", func(t *testing.T) {
-		m := NewManager(logger, "session", 2, 1, 10)
+		m := NewManager(logger, metrics, "session", 1, 2, 1, 10)
 		pool := m.GetPool("test", nil, SessionMode, 2)
 
 		// Checkout max connections
@@ -150,7 +155,7 @@ func TestConnectionPool(t *testing.T) {
 	})
 
 	t.Run("Statistics", func(t *testing.T) {
-		m := NewManager(logger, "session", 5, 1, 10)
+		m := NewManager(logger, metrics, "session", 1, 5, 1, 10)
 		pool := m.GetPool("test", nil, SessionMode, 5)
 
 		// Initial stats
@@ -182,21 +187,22 @@ func TestConnectionPool(t *testing.T) {
 
 func TestPoolModes(t *testing.T) {
 	logger := zap.NewNop()
+	metrics, _ := util.NewMetricsClient(logger, "localhost:9090")
 
 	t.Run("SessionMode", func(t *testing.T) {
-		m := NewManager(logger, "session", 10, 2, 10)
-		
+		m := NewManager(logger, metrics, "session", 2, 10, 2, 10)
+
 		// Register client
 		client, err := m.RegisterClient("client1", "user1", "db1", SessionMode)
 		assert.NoError(t, err)
 
 		// Create a mock pool
 		pool := m.GetPool("db1", nil, SessionMode, 10)
-		
+
 		// In session mode, client should keep same connection
 		// Note: GetConnection needs integration with router, so we test the logic directly
 		assert.Equal(t, SessionMode, client.PoolMode)
-		
+
 		// Simulate getting connection
 		conn, err := pool.Checkout(client.ID)
 		assert.NoError(t, err)
@@ -204,14 +210,14 @@ func TestPoolModes(t *testing.T) {
 
 		// Client should keep the connection
 		assert.NotNil(t, client.AssignedConn)
-		
+
 		// Cleanup
 		m.UnregisterClient("client1")
 	})
 
 	t.Run("TransactionMode", func(t *testing.T) {
-		m := NewManager(logger, "transaction", 10, 2, 10)
-		
+		m := NewManager(logger, metrics, "transaction", 2, 10, 2, 10)
+
 		// Register client
 		client, err := m.RegisterClient("client1", "user1", "db1", TransactionMode)
 		assert.NoError(t, err)
@@ -219,21 +225,21 @@ func TestPoolModes(t *testing.T) {
 
 		// In transaction mode, connection is assigned per transaction
 		// Outside transaction, connections are temporary
-		
+
 		// Cleanup
 		m.UnregisterClient("client1")
 	})
 
 	t.Run("StatementMode", func(t *testing.T) {
-		m := NewManager(logger, "statement", 10, 2, 10)
-		
+		m := NewManager(logger, metrics, "statement", 2, 10, 2, 10)
+
 		// Register client
 		client, err := m.RegisterClient("client1", "user1", "db1", StatementMode)
 		assert.NoError(t, err)
 		assert.Equal(t, StatementMode, client.PoolMode)
 
 		// In statement mode, connections are always temporary
-		
+
 		// Cleanup
 		m.UnregisterClient("client1")
 	})
@@ -241,7 +247,9 @@ func TestPoolModes(t *testing.T) {
 
 func TestConcurrentAccess(t *testing.T) {
 	logger := zap.NewNop()
-	m := NewManager(logger, "session", 5, 1, 100)
+	metrics, _ := util.NewMetricsClient(logger, "localhost:9090")
+
+	m := NewManager(logger, metrics, "session", 1, 5, 1, 100)
 	pool := m.GetPool("test", nil, SessionMode, 5)
 
 	// Concurrent checkouts and returns

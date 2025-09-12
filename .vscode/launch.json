@@ -21,7 +21,6 @@
       "request": "launch",
       "program": "${workspaceFolder}/mongobouncer.go",
       "args": [
-        "--verbose",
         "--config",
         "${workspaceFolder}/tools/config/mongobouncer/config.toml",
       ],

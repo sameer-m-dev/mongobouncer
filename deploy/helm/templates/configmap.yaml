@@ -1,9 +1,8 @@
 apiVersion: v1
 kind: ConfigMap
 metadata:
-  name: {{ include "mongobouncer.configName" . }}
-  labels:
-    {{- include "mongobouncer.labels" . | nindent 4 }}
+  name: { { include "mongobouncer.configName" . } }
+  labels: { { - include "mongobouncer.labels" . | nindent 4 } }
 data:
   mongobouncer.toml: |
     [mongobouncer]
@@ -14,11 +13,9 @@ data:
 
     # Connection management
     pool_mode = "{{ .Values.app.config.poolMode }}"
-    default_pool_size = {{ .Values.app.config.defaultPoolSize }}
-    max_client_conn = {{ .Values.app.config.maxClientConn }}
-    {{- if .Values.app.config.minPoolSize }}
     min_pool_size = {{ .Values.app.config.minPoolSize }}
-    {{- end }}
+    max_pool_size = {{ .Values.app.config.maxPoolSize }}
+    max_client_conn = {{ .Values.app.config.maxClientConn }}
 
     {{- if .Values.app.config.tls.enabled }}
     [mongobouncer.tls]
@@ -38,15 +35,6 @@ data:
     max_bson_object_size = {{ .Values.app.config.mongodb.maxBsonObjectSize }}
     enable_retryable_writes = {{ .Values.app.config.mongodb.enableRetryableWrites }}
     enable_retryable_reads = {{ .Values.app.config.mongodb.enableRetryableReads }}
-
-    {{- if .Values.app.config.dynamic.enabled }}
-    [mongobouncer.dynamic]
-    enabled = {{ .Values.app.config.dynamic.enabled }}
-    config_reload_interval = "{{ .Values.app.config.dynamic.configReloadInterval }}"
-    management_port = {{ .Values.app.config.dynamic.managementPort }}
-    management_enabled = {{ .Values.app.config.dynamic.managementEnabled }}
-    read_only_mode = {{ .Values.app.config.dynamic.readOnlyMode }}
-    {{- end }}
 
     {{- if .Values.monitoring.prometheus.enabled }}
     [mongobouncer.metrics]

@@ -33,6 +33,7 @@ type Operation interface {
 	Unacknowledged() bool
 	CommandAndCollection() (Command, string)
 	TransactionDetails() *TransactionDetails
+	DatabaseName() string
 }
 
 // see https://github.com/mongodb/mongo-go-driver/blob/v1.7.2/x/mongo/driver/operation.go#L1361-L1426
@@ -85,6 +86,10 @@ func (o *opUnknown) TransactionDetails() *TransactionDetails {
 	return nil
 }
 
+func (o *opUnknown) DatabaseName() string {
+	return ""
+}
+
 func (o *opUnknown) OpCode() wiremessage.OpCode {
 	return o.opCode
 }
@@ -134,6 +139,15 @@ type opQuery struct {
 
 func (q *opQuery) TransactionDetails() *TransactionDetails {
 	return nil
+}
+
+func (q *opQuery) DatabaseName() string {
+	// Extract database from fullCollectionName (format: database.collection)
+	parts := strings.SplitN(q.fullCollectionName, ".", 2)
+	if len(parts) >= 2 {
+		return parts[0]
+	}
+	return ""
 }
 
 // see https://github.com/mongodb/mongo-go-driver/blob/v1.7.2/x/mongo/driver/topology/server_test.go#L968-L1003
@@ -485,6 +499,18 @@ func (m *opMsg) String() string {
 	return fmt.Sprintf("{ OpMsg flags: %d, sections: [%s], checksum: %d }", m.flags, strings.Join(sections, ", "), m.checksum)
 }
 
+// DatabaseName extracts the database name from the operation
+func (m *opMsg) DatabaseName() string {
+	for _, section := range m.sections {
+		if single, ok := section.(*opMsgSectionSingle); ok {
+			if db, ok := single.msg.Lookup("$db").StringValueOK(); ok {
+				return db
+			}
+		}
+	}
+	return ""
+}
+
 // https://docs.mongodb.com/manual/reference/mongodb-wire-protocol/#op-reply
 type opReply struct {
 	reqID        int32
@@ -497,6 +523,10 @@ type opReply struct {
 
 func (r *opReply) TransactionDetails() *TransactionDetails {
 	return nil
+}
+
+func (r *opReply) DatabaseName() string {
+	return ""
 }
 
 // see https://github.com/mongodb/mongo-go-driver/blob/v1.7.2/x/mongo/driver/operation.go#L1297-L1358
@@ -600,6 +630,15 @@ func (g *opGetMore) TransactionDetails() *TransactionDetails {
 	return nil
 }
 
+func (g *opGetMore) DatabaseName() string {
+	// Extract database from fullCollectionName (format: database.collection)
+	parts := strings.SplitN(g.fullCollectionName, ".", 2)
+	if len(parts) >= 2 {
+		return parts[0]
+	}
+	return ""
+}
+
 // see https://github.com/mongodb/mongo-go-driver/blob/v1.7.2/x/mongo/driver/operation.go#L1297-L1358
 func decodeGetMore(reqID int32, wm []byte) (*opGetMore, error) {
 	var ok bool
@@ -689,6 +728,15 @@ func (u *opUpdate) TransactionDetails() *TransactionDetails {
 	return nil
 }
 
+func (u *opUpdate) DatabaseName() string {
+	// Extract database from fullCollectionName (format: database.collection)
+	parts := strings.SplitN(u.fullCollectionName, ".", 2)
+	if len(parts) >= 2 {
+		return parts[0]
+	}
+	return ""
+}
+
 func decodeUpdate(reqID int32, wm []byte) (*opUpdate, error) {
 	var ok bool
 	u := opUpdate{
@@ -771,6 +819,15 @@ type opInsert struct {
 
 func (i *opInsert) TransactionDetails() *TransactionDetails {
 	return nil
+}
+
+func (i *opInsert) DatabaseName() string {
+	// Extract database from fullCollectionName (format: database.collection)
+	parts := strings.SplitN(i.fullCollectionName, ".", 2)
+	if len(parts) >= 2 {
+		return parts[0]
+	}
+	return ""
 }
 
 func decodeInsert(reqID int32, wm []byte) (*opInsert, error) {
@@ -857,6 +914,15 @@ func (d *opDelete) TransactionDetails() *TransactionDetails {
 	return nil
 }
 
+func (d *opDelete) DatabaseName() string {
+	// Extract database from fullCollectionName (format: database.collection)
+	parts := strings.SplitN(d.fullCollectionName, ".", 2)
+	if len(parts) >= 2 {
+		return parts[0]
+	}
+	return ""
+}
+
 func decodeDelete(reqID int32, wm []byte) (*opDelete, error) {
 	var ok bool
 	d := opDelete{
@@ -936,6 +1002,10 @@ type opKillCursors struct {
 
 func (k *opKillCursors) TransactionDetails() *TransactionDetails {
 	return nil
+}
+
+func (k *opKillCursors) DatabaseName() string {
+	return ""
 }
 
 func decodeKillCursors(reqID int32, wm []byte) (*opKillCursors, error) {

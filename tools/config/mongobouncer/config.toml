@@ -8,18 +8,19 @@ log_level = "info"
 
 # Connection management
 pool_mode = "transaction"
-default_pool_size = 10
+min_pool_size = 3
+max_pool_size = 10
 max_client_conn = 50
 
 # Prometheus metrics (optional but recommended)
-[mongobouncer.metrics]
-address = "0.0.0.0:9090"
-enabled = true
+metrics_address = "0.0.0.0:9090"
+metrics_enabled = true
 
 # Database connections - Configure these for your MongoDB setup
 [databases]
-# Simple local MongoDB connection
-mongobouncer = "mongodb://localhost:27018/mongobouncer"
+# Application databases
+"*" = "mongodb://localhost:27019/mongobouncer"
+mongobouncer_test = "mongodb://localhost:27018/mongobouncer_test"
 
 # Alternative: More explicit configuration
 # [databases.test_db]

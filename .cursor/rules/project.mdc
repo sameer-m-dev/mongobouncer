@@ -43,7 +43,7 @@ mongobouncer/
 
 ## Technology Stack
 - **Language**: Go (1.23+)
-- **Configuration**: TOML-based with dynamic reloading
+- **Configuration**: TOML-based
 - **Monitoring**: Native Prometheus metrics (HTTP endpoints)
 - **MongoDB Driver**: Official Go MongoDB driver
 - **Testing**: Comprehensive test suite with benchmarks
@@ -175,9 +175,12 @@ type Config interface {
 - Prometheus for metrics scraping (optional)
 
 ### Build Process
+
+#### Always use the bin folder for storing all binaries
+
 ```bash
 # Build binary
-go build -o mongobouncer .
+go build -o bin/mongobouncer .
 
 # Run with configuration
 ./mongobouncer -config mongobouncer.toml
@@ -220,8 +223,7 @@ config/
 proxy/
 ├── proxy.go         # Main proxy server implementation  
 ├── connection.go    # Individual connection handling
-├── router.go        # Database routing logic
-└── dynamic.go       # Dynamic configuration management
+└── router.go        # Database routing logic
 
 mongo/
 ├── mongo.go         # MongoDB client wrapper
@@ -250,7 +252,7 @@ auth/
 1. **Setup**: `go mod tidy` to install dependencies
 2. **Configure**: Copy `mongobouncer.toml.example` to `mongobouncer.toml`
 3. **Test**: `go test ./...` to run all tests  
-4. **Build**: `go build -o mongobouncer .`
+4. **Build**: `go build -o bin/mongobouncer .`
 5. **Run**: `./mongobouncer -config mongobouncer.toml -verbose`
 
 ### Testing Commands  
@@ -316,335 +318,7 @@ go test ./test/ -v
 # 1. Clone and build
 git clone <repo>
 cd mongobouncer  
-go build -o mongobouncer .
-
-# 2. Configure
-cp examples/mongobouncer.toml.example mongobouncer.toml
-# Edit mongobouncer.toml with your MongoDB settings
-
-# 3. Run
-./mongobouncer -config mongobouncer.toml
-
-# 4. Monitor
-curl http://localhost:9090/metrics  # Prometheus metrics
-curl http://localhost:9090/health   # Health check
-```
-
-This project serves as a critical infrastructure component for MongoDB deployments requiring connection pooling, multiplexing, and advanced connection management capabilities.# MongoBouncer Project Documentation
-
-## Project Overview
-**MongoBouncer** is a MongoDB connection pooling proxy that acts as an exact replica of `pgbouncer` but designed specifically for MongoDB. It serves as a connection multiplexer that reduces connection overhead and provides advanced connection management for high-scale MongoDB deployments.
-
-### Key Purpose
-- **Connection Storm Mitigation**: Reduces MongoDB connections from 30k+ down to ~2k in production environments
-- **Connection Multiplexing**: Handles numerous client connections through optimized connection pools
-- **Resource Optimization**: Significantly reduces `ismaster` commands and connection overhead
-- **Production Scale**: Built for high-scale Rails apps and multi-process deployments (like Puma workers)
-
-## Architecture Overview
-
-### Core Components
-```
-┌─────────────────┐    ┌─────────────────┐    ┌─────────────────┐
-│   Client App    │───▶│  MongoBouncer   │───▶│   MongoDB       │
-│                 │    │   (Proxy)       │    │   Cluster       │
-└─────────────────┘    └─────────────────┘    └─────────────────┘
-                              │
-                              ▼
-                       ┌─────────────────┐
-                       │  Prometheus     │
-                       │   Metrics       │
-                       └─────────────────┘
-```
-
-### Package Structure
-```
-mongobouncer/
-├── config/          # TOML configuration system
-├── proxy/           # Connection proxy and routing
-├── mongo/           # MongoDB client management
-├── pool/            # Connection pool management
-├── auth/            # Authentication handling
-├── util/            # Utilities (metrics, helpers)
-└── test/            # Integration and scenario tests
-```
-
-## Technology Stack
-- **Language**: Go (1.23+)
-- **Configuration**: TOML-based with dynamic reloading
-- **Monitoring**: Native Prometheus metrics (HTTP endpoints)
-- **MongoDB Driver**: Official Go MongoDB driver
-- **Testing**: Comprehensive test suite with benchmarks
-- **Deployment**: Single binary with Docker support
-
-## Configuration System
-
-### Primary Configuration (TOML)
-The application uses a unified TOML configuration system:
-
-```toml
-[mongobouncer]
-# Server settings
-listen_addr = "0.0.0.0"
-listen_port = 27017
-log_level = "info"
-
-# Connection management  
-pool_mode = "session"  # session, statement, transaction
-default_pool_size = 20
-max_client_conn = 100
-
-# Prometheus metrics
-metrics_address = "localhost:9090"
-metrics_enabled = true
-
-# Dynamic configuration
-dynamic_config = "http://config-server/mongobouncer"
-
-[databases]
-# Database routing configurations
-app_db = "mongodb://localhost:27017/app?maxPoolSize=10"
-analytics = {
-    host = "analytics.example.com",
-    port = 27017,
-    database = "analytics",
-    max_connections = 50,
-    pool_mode = "statement"
-}
-
-[users]
-# User-specific settings
-app_user = { password = "hash123", pool_mode = "transaction", max_user_connections = 25 }
-readonly = { password = "hash456", pool_mode = "statement", max_user_connections = 10 }
-```
-
-### Command Line Interface
-```bash
-./mongobouncer [OPTIONS]
-  -config string    Path to TOML configuration file
-  -verbose          Enable verbose (debug) logging  
-  -help             Show help message
-```
-
-## Core Features
-
-### Connection Management
-- **Pool Modes**: Session, Statement, Transaction pooling
-- **Connection Multiplexing**: Multiple client connections → fewer backend connections  
-- **Dynamic Routing**: Route databases to different MongoDB clusters
-- **Connection Limits**: Per-user and global connection limits
-- **Graceful Shutdown**: Proper connection cleanup and drain
-
-### Advanced Capabilities  
-- **Transaction Pinning**: Ensures transaction consistency across operations
-- **Cursor Tracking**: Maintains cursor-to-server mappings
-- **Authentication**: Trust, MD5, and user-based auth systems
-- **Dynamic Configuration**: Runtime config updates via HTTP endpoints
-- **Error Handling**: Comprehensive error handling and failover logic
-
-### Monitoring & Observability
-**Prometheus Metrics** (served on `:9090/metrics`):
-- Connection metrics (open, opened, closed)
-- Performance metrics (latency, throughput)  
-- Resource tracking (cursors, transactions, pools)
-- MongoDB driver metrics (server selection, checkouts)
-- Size metrics (request/response bytes)
-
-**HTTP Endpoints**:
-- `/metrics` - Prometheus metrics scraping
-- `/health` - Health check endpoint
-
-## Development Guidelines
-
-### Code Organization
-```go
-// Package naming convention
-package proxy  // Connection proxy logic
-package mongo  // MongoDB client management  
-package config // Configuration parsing and management
-package util   // Shared utilities and metrics
-```
-
-### Key Interfaces
-```go
-// Main proxy interface
-type Proxy interface {
-    Run() error
-    Stop() error
-}
-
-// Metrics interface (Prometheus-compatible)
-type MetricsClient interface {
-    Timing(name string, duration time.Duration, tags []string, rate float64) error
-    Incr(name string, tags []string, rate float64) error
-    Gauge(name string, value float64, tags []string, rate float64) error
-}
-
-// Configuration interface
-type Config interface {
-    Logger() *zap.Logger
-    Metrics() *util.MetricsClient
-    GetProxies() ([]*proxy.Proxy, error)
-}
-```
-
-### Testing Strategy
-- **Unit Tests**: Component-level testing with mocks
-- **Integration Tests**: Multi-component interaction testing
-- **Scenario Tests**: Real-world deployment scenario testing
-- **Benchmark Tests**: Performance and memory allocation testing
-- **Load Testing**: Connection multiplexing under high load
-
-## Production Deployment
-
-### Prerequisites
-- MongoDB 3.6+ (standalone, replica set, or sharded cluster)
-- Go 1.23+ for building from source
-- Prometheus for metrics scraping (optional)
-
-### Build Process
-```bash
-# Build binary
-go build -o mongobouncer .
-
-# Run with configuration
-./mongobouncer -config mongobouncer.toml
-
-# Docker deployment
-docker build -t mongobouncer .
-docker run -p 27017:27017 -p 9090:9090 mongobouncer
-```
-
-### Production Configuration
-```toml
-[mongobouncer]
-listen_addr = "0.0.0.0"
-listen_port = 27017
-pool_mode = "session"
-default_pool_size = 50
-max_client_conn = 500
-metrics_address = "0.0.0.0:9090"
-log_level = "info"
-
-[databases]
-# Production database clusters
-primary = "mongodb://primary-cluster:27017/app?replicaSet=rs0"
-analytics = "mongodb://analytics-cluster:27017/analytics?replicaSet=analytics-rs"
-reporting = "mongodb://reporting-cluster:27017/reports?readPreference=secondary"
-```
-
-## File Structure & Key Files
-
-### Core Application Files
-- `mongobouncer.go` - Main application entry point
-- `mongobouncer.toml.example` - Example configuration file
-
-### Package Details
-```
-config/
-├── config.go        # TOML configuration parser and management
-└── config_test.go   # Configuration testing
-
-proxy/
-├── proxy.go         # Main proxy server implementation  
-├── connection.go    # Individual connection handling
-├── router.go        # Database routing logic
-└── dynamic.go       # Dynamic configuration management
-
-mongo/
-├── mongo.go         # MongoDB client wrapper
-├── cursor_cache.go  # Cursor tracking and management
-└── transaction_cache.go # Transaction pinning logic
-
-util/
-├── metrics.go       # Prometheus metrics implementation
-└── metrics_test.go  # Metrics testing
-
-pool/
-└── pool.go         # Connection pool management
-
-auth/
-└── auth.go         # Authentication systems
-```
-
-### Documentation & Reports
-- `README.md` - Project overview and usage instructions
-- `PROMETHEUS_MIGRATION_REPORT.md` - Detailed migration documentation
-- `test_*.toml` - Various test configurations
-
-## Development Workflow
-
-### Local Development
-1. **Setup**: `go mod tidy` to install dependencies
-2. **Configure**: Copy `examples/mongobouncer.toml.example` to `mongobouncer.toml`
-3. **Test**: `go test ./...` to run all tests  
-4. **Build**: `go build -o mongobouncer .`
-5. **Run**: `./mongobouncer -config mongobouncer.toml -verbose`
-
-### Testing Commands  
-```bash
-# Run all tests
-go test ./... -v
-
-# Run specific package tests
-go test ./config/ -v
-go test ./util/ -v
-
-# Run benchmarks
-go test ./test/ -bench=. -v
-
-# Integration tests
-go test ./test/ -v
-```
-
-## Key Design Decisions
-
-### Configuration Management
-- **Single Source**: TOML file as the primary configuration method
-- **Minimal CLI**: Only essential flags (`-config`, `-verbose`, `-help`)
-- **Dynamic Updates**: Support for runtime configuration changes
-- **Environment Variables**: Support for `${VAR}` expansion in TOML
-
-### Metrics Architecture  
-- **Prometheus Native**: HTTP-based metrics scraping (replaced StatsD)
-- **Self-Contained**: Built-in metrics server (no external dependencies)
-- **Rich Labels**: Multi-dimensional metrics with cluster/database labeling
-- **Standard Formats**: Following Prometheus naming conventions
-
-### Connection Handling
-- **Wire Protocol**: Direct MongoDB wire protocol handling
-- **Connection Reuse**: Efficient connection pooling and reuse
-- **Session Affinity**: Transaction and cursor pinning to specific connections
-- **Graceful Degradation**: Handles connection failures and network issues
-
-## Performance Characteristics
-
-### Production Impact
-- **Connection Reduction**: 30k+ → ~2k connections (10x+ reduction)
-- **CPU Efficiency**: Single monitor goroutine vs per-process monitors
-- **Memory Efficiency**: Shared connection pools across multiple processes
-- **Network Efficiency**: Reduced `ismaster` command frequency
-
-### Benchmarks
-- **Routing**: ~131ns per database route resolution
-- **Authentication**: ~2ns (trust) to ~22ns (MD5) per auth check
-- **Pool Operations**: ~710ns per connection checkout/return
-- **Concurrent Load**: Handles 7M+ operations in stress tests
-
-## Security Considerations
-- **Authentication**: Multiple auth methods (trust, MD5, user-based)
-- **Connection Isolation**: User-based connection limits and permissions
-- **Configuration Security**: Secure handling of passwords and connection strings
-- **Network Security**: Configurable bind addresses and port restrictions
-
----
-
-## Quick Start
-```bash
-# 1. Clone and build
-git clone <repo>
-cd mongobouncer  
-go build -o mongobouncer .
+go build -o bin/mongobouncer .
 
 # 2. Configure
 cp examples/mongobouncer.toml.example mongobouncer.toml

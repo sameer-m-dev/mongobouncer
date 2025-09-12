@@ -207,7 +207,6 @@ Update the 2 skipped tests to use new TOML config system:
 
 ### 2. Add TOML-Specific Tests
 - Test TOML config loading in integration scenarios
-- Test dynamic config reloading
 - Test config validation edge cases
 
 ### 3. Enhanced Coverage

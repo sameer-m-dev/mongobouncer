@@ -25,7 +25,7 @@ The proxy was specifically built to support complex sharded architectures where 
 ```bash
 git clone https://github.com/sameer-m-dev/mongobouncer
 cd mongobouncer
-go build -o mongobouncer .
+go build -o bin/mongobouncer .
 ```
 
 **Using Go Install:**
@@ -60,7 +60,8 @@ listen_addr = "0.0.0.0"
 listen_port = 27017
 log_level = "info"
 pool_mode = "session"
-default_pool_size = 20
+min_pool_size = 5
+max_pool_size = 20
 max_client_conn = 100
 
 [mongobouncer.metrics]
@@ -93,6 +94,44 @@ analytics = "mongodb://analytics-cluster:27017/analytics?readPreference=secondar
 - **Transaction Mode**: Connection returned after transaction completes
 - **Statement Mode**: Connection returned immediately after statement execution
 
+*Wildcard Database Support:*
+```toml
+[databases]
+# Exact match - specific database
+myapp_prod = "mongodb://prod-cluster:27017/myapp_prod"
+
+# Wildcard patterns - match multiple databases
+# Prefix wildcard: matches databases starting with "analytics_"
+analytics_* = "mongodb://analytics-cluster:27017/analytics"
+
+# Suffix wildcard: matches databases ending with "_test"  
+*_test = "mongodb://test-cluster:27017/test"
+
+# Contains wildcard: matches databases containing "staging"
+*staging* = "mongodb://staging-cluster:27017/staging"
+
+# Complex wildcard: matches patterns like "analytics_tenant_v2"
+analytics_*_v2 = "mongodb://analytics-v2-cluster:27017/analytics_v2"
+
+# Catch-all wildcard: matches any database not matched above
+* = "mongodb://default-cluster:27017/default"
+```
+
+**Wildcard Database Routing:**
+MongoBouncer supports wildcard database patterns for dynamic routing based on database name patterns. This allows you to handle multiple databases with similar naming patterns without configuring each one individually.
+
+**Precedence Logic:**
+1. **Exact Match**: Specific database names (e.g., `myapp_prod`) take highest priority
+2. **Wildcard Match**: Pattern-based matches (e.g., `analytics_*`, `*_test`) are checked in order
+3. **Error**: If no match is found, the connection is rejected with an appropriate error message
+
+**Wildcard Pattern Types:**
+- **Prefix**: `analytics_*` matches `analytics_users`, `analytics_orders`, etc.
+- **Suffix**: `*_test` matches `users_test`, `products_test`, etc.  
+- **Contains**: `*staging*` matches `users_staging`, `staging_orders`, etc.
+- **Complex**: `analytics_*_v2` matches `analytics_tenant_v2`, `analytics_customer_v2`, etc.
+- **Catch-all**: `*` matches any database not matched by other patterns
+
 *Production Deployment:*
 ```bash
 # Docker deployment
@@ -113,6 +152,7 @@ helm install mongobouncer ./deploy/helm/mongobouncer
 - ✅ **Transaction Server Pinning**: Ensures transaction consistency across operations  
 - ✅ **Cursor Tracking**: Maintains cursor-to-server mappings for complex queries
 - ✅ **Multi-Cluster Support**: Route different databases to separate MongoDB clusters
+- ✅ **Wildcard Database Support**: Dynamic routing based on database name patterns
 - ✅ **Authentication Handling**: Trust, MD5, and MongoDB native authentication methods
 - ✅ **Dynamic Configuration**: Runtime configuration updates without restarts
 - ✅ **Prometheus Metrics**: Comprehensive monitoring and observability
@@ -124,12 +164,11 @@ helm install mongobouncer ./deploy/helm/mongobouncer
 - **Sharded Clusters**: Distributed MongoDB with `mongos` routing
 - **Mixed Environments**: Simultaneous connections to different topology types
 
-
 ### Prometheus Metrics
 `mongobouncer` supports Prometheus metrics collection with a built-in HTTP endpoint for scraping. By default it serves metrics on `localhost:9090/metrics`. The following metrics are reported:
 
 **Connection Metrics:**
- - `mongobouncer_open_connections_total` (Gauge) - Number of open connections between the proxy and the application
+ - `mongobouncer_open_connections_total` (Gauge) - Current number of open connections between the proxy and the application
  - `mongobouncer_connections_opened_total` (Counter) - Total number of connections opened with the application
  - `mongobouncer_connections_closed_total` (Counter) - Total number of connections closed with the application
 
@@ -204,7 +243,7 @@ We welcome contributions to `mongobouncer`! Here's how you can help:
 2. **Setup Development Environment**
    ```bash
    go mod tidy
-   go build -o mongobouncer .
+   go build -o bin/mongobouncer .
    ```
 
 3. **Run Tests**

@@ -157,11 +157,6 @@ Generate container ports
   containerPort: {{ .Values.monitoring.healthCheck.port }}
   protocol: TCP
 {{- end }}
-{{- if .Values.app.config.dynamic.managementEnabled }}
-- name: management
-  containerPort: {{ .Values.app.config.dynamic.managementPort }}
-  protocol: TCP
-{{- end }}
 {{- end }}
 
 {{/*
@@ -182,12 +177,6 @@ Generate service ports
 - name: health
   port: {{ .Values.monitoring.healthCheck.port }}
   targetPort: health
-  protocol: TCP
-{{- end }}
-{{- if .Values.app.config.dynamic.managementEnabled }}
-- name: management
-  port: {{ .Values.app.config.dynamic.managementPort }}
-  targetPort: management
   protocol: TCP
 {{- end }}
 {{- end }}

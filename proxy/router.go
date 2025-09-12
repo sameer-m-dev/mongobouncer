@@ -2,6 +2,7 @@ package proxy
 
 import (
 	"fmt"
+	"regexp"
 	"strings"
 	"sync"
 
@@ -44,6 +45,7 @@ const (
 	PrefixMatch
 	SuffixMatch
 	ContainsMatch
+	WildcardMatch
 )
 
 // NewDatabaseRouter creates a new database router
@@ -84,6 +86,10 @@ func (r *DatabaseRouter) AddRoute(pattern string, config *RouteConfig) error {
 		} else if strings.HasSuffix(pattern, "*") {
 			patternRoute.PatternType = PrefixMatch
 			patternRoute.Pattern = strings.TrimSuffix(pattern, "*")
+		} else {
+			// Handle wildcard patterns with * in the middle
+			patternRoute.PatternType = WildcardMatch
+			patternRoute.Pattern = pattern
 		}
 
 		r.patternRoutes = append(r.patternRoutes, patternRoute)
@@ -167,9 +173,33 @@ func (r *DatabaseRouter) matchesPattern(dbName string, pattern *PatternRoute) bo
 		return strings.HasSuffix(dbName, pattern.Pattern)
 	case ContainsMatch:
 		return strings.Contains(dbName, pattern.Pattern)
+	case WildcardMatch:
+		return r.matchesWildcard(dbName, pattern.Pattern)
 	default:
 		return false
 	}
+}
+
+// matchesWildcard checks if a database name matches a wildcard pattern
+func (r *DatabaseRouter) matchesWildcard(dbName string, pattern string) bool {
+	// Convert pattern to regex
+	// Replace * with .* for regex matching
+	regexPattern := strings.ReplaceAll(pattern, "*", ".*")
+
+	// Add anchors to match the entire string
+	regexPattern = "^" + regexPattern + "$"
+
+	// Compile and match
+	matched, err := regexp.MatchString(regexPattern, dbName)
+	if err != nil {
+		r.logger.Error("Error matching wildcard pattern",
+			zap.String("pattern", pattern),
+			zap.String("regex", regexPattern),
+			zap.Error(err))
+		return false
+	}
+
+	return matched
 }
 
 // GetAllRoutes returns all configured routes for monitoring

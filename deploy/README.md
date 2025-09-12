@@ -15,7 +15,6 @@ MongoBouncer is a MongoDB connection pooling proxy that serves as a connection m
 - **Resource Optimization**: Significantly reduces `ismaster` commands and connection overhead
 - **Production Scale**: Built for high-scale applications and multi-process deployments
 - **Native Prometheus Metrics**: Built-in metrics server with comprehensive MongoDB proxy metrics
-- **Dynamic Configuration**: Runtime configuration updates and management API
 - **TLS/SSL Support**: Full support for secure client and server connections
 
 ## Prerequisites
@@ -173,8 +172,9 @@ The following table lists the configurable parameters of the MongoBouncer chart 
 | `app.config.listenPort` | Port to bind the proxy server | `27017` |
 | `app.config.logLevel` | Logging level | `"info"` |
 | `app.config.poolMode` | Default connection pool mode | `"session"` |
-| `app.config.defaultPoolSize` | Default connection pool size | `20` |
-| `app.config.maxClientConn` | Maximum client connections | `100` |
+| `app.config.minPoolSize` | Minimum connection pool size | `5` |
+| `app.config.maxPoolSize` | Maximum connection pool size | `20` |
+| `app.config.maxClientConn` | Maximum client connections (0 = unlimited) | `100` |
 | `app.databases` | MongoDB database configurations | `{}` |
 | `app.users` | User authentication configurations | `{}` |
 
@@ -216,18 +216,14 @@ replicaCount: 3
 app:
   config:
     poolMode: "session"
-    defaultPoolSize: 50
+    minPoolSize: 5
+    maxPoolSize: 50
     maxClientConn: 500
     
     tls:
       enabled: true
       certFile: "/etc/tls/tls.crt"
       keyFile: "/etc/tls/tls.key"
-    
-    dynamic:
-      enabled: true
-      managementEnabled: true
-      configReloadInterval: "30s"
   
   databases:
     production:

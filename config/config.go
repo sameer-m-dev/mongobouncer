@@ -11,6 +11,7 @@ import (
 	"go.uber.org/zap/zapcore"
 
 	"github.com/sameer-m-dev/mongobouncer/mongo"
+	"github.com/sameer-m-dev/mongobouncer/pool"
 	"github.com/sameer-m-dev/mongobouncer/proxy"
 	"github.com/sameer-m-dev/mongobouncer/util"
 )
@@ -38,7 +39,8 @@ type MongobouncerConfig struct {
 	AdminUsers           []string `toml:"admin_users"`
 	StatsUsers           []string `toml:"stats_users"`
 	PoolMode             string   `toml:"pool_mode"`
-	DefaultPoolSize      int      `toml:"default_pool_size"`
+	MinPoolSize          int      `toml:"min_pool_size"`
+	MaxPoolSize          int      `toml:"max_pool_size"`
 	ReservePoolSize      int      `toml:"reserve_pool_size"`
 	MaxClientConn        int      `toml:"max_client_conn"`
 	ServerIdleTimeout    int      `toml:"server_idle_timeout"`
@@ -54,9 +56,6 @@ type MongobouncerConfig struct {
 	Network              string   `toml:"network"`
 	Unlink               bool     `toml:"unlink"`
 	Ping                 bool     `toml:"ping"`
-	EnableSDAMMetrics    bool     `toml:"enable_sdam_metrics"`
-	EnableSDAMLogging    bool     `toml:"enable_sdam_logging"`
-	DynamicConfig        string   `toml:"dynamic_config"`
 }
 
 // Database represents database configuration
@@ -100,7 +99,6 @@ type Config struct {
 	network    string
 	unlink     bool
 	ping       bool
-	dynamic    string
 }
 
 type client struct {
@@ -119,7 +117,8 @@ func LoadConfig(configPath string, verbose bool) (*Config, error) {
 			LogLevel:        "info",
 			Network:         "tcp4",
 			PoolMode:        "session",
-			DefaultPoolSize: 20,
+			MinPoolSize:     5,
+			MaxPoolSize:     20,
 			ReservePoolSize: 5,
 			MaxClientConn:   100,
 			MetricsAddress:  "localhost:9090",
@@ -181,7 +180,6 @@ func LoadConfig(configPath string, verbose bool) (*Config, error) {
 		network:    config.Mongobouncer.Network,
 		unlink:     config.Mongobouncer.Unlink,
 		ping:       config.Mongobouncer.Ping,
-		dynamic:    config.Mongobouncer.DynamicConfig,
 	}, nil
 }
 
@@ -233,8 +231,15 @@ func parseRawConfig(rawConfig map[string]interface{}, config *TOMLConfig) error 
 		if poolMode, ok := mb["pool_mode"].(string); ok {
 			config.Mongobouncer.PoolMode = poolMode
 		}
+		if minPoolSize, ok := mb["min_pool_size"].(int64); ok {
+			config.Mongobouncer.MinPoolSize = int(minPoolSize)
+		}
+		if maxPoolSize, ok := mb["max_pool_size"].(int64); ok {
+			config.Mongobouncer.MaxPoolSize = int(maxPoolSize)
+		}
+		// Backward compatibility: if default_pool_size is set, use it as max_pool_size
 		if defaultPoolSize, ok := mb["default_pool_size"].(int64); ok {
-			config.Mongobouncer.DefaultPoolSize = int(defaultPoolSize)
+			config.Mongobouncer.MaxPoolSize = int(defaultPoolSize)
 		}
 		if reservePoolSize, ok := mb["reserve_pool_size"].(int64); ok {
 			config.Mongobouncer.ReservePoolSize = int(reservePoolSize)
@@ -256,15 +261,6 @@ func parseRawConfig(rawConfig map[string]interface{}, config *TOMLConfig) error 
 		}
 		if ping, ok := mb["ping"].(bool); ok {
 			config.Mongobouncer.Ping = ping
-		}
-		if enableSDAMMetrics, ok := mb["enable_sdam_metrics"].(bool); ok {
-			config.Mongobouncer.EnableSDAMMetrics = enableSDAMMetrics
-		}
-		if enableSDAMLogging, ok := mb["enable_sdam_logging"].(bool); ok {
-			config.Mongobouncer.EnableSDAMLogging = enableSDAMLogging
-		}
-		if dynamicConfig, ok := mb["dynamic_config"].(string); ok {
-			config.Mongobouncer.DynamicConfig = dynamicConfig
 		}
 	}
 
@@ -383,9 +379,15 @@ func buildClients(config *TOMLConfig, logger *zap.Logger) ([]client, error) {
 				params = append(params, fmt.Sprintf("maxPoolSize=%d", maxPoolSize))
 			} else if poolSize, ok := dbConfig["pool_size"].(int64); ok && poolSize > 0 {
 				params = append(params, fmt.Sprintf("maxPoolSize=%d", poolSize))
+			} else if config.Mongobouncer.MaxPoolSize > 0 {
+				// Use default max pool size if not specified in database config
+				params = append(params, fmt.Sprintf("maxPoolSize=%d", config.Mongobouncer.MaxPoolSize))
 			}
 			if minPoolSize, ok := dbConfig["minPoolSize"].(int64); ok && minPoolSize > 0 {
 				params = append(params, fmt.Sprintf("minPoolSize=%d", minPoolSize))
+			} else if config.Mongobouncer.MinPoolSize > 0 {
+				// Use default min pool size if not specified in database config
+				params = append(params, fmt.Sprintf("minPoolSize=%d", config.Mongobouncer.MinPoolSize))
 			}
 			if maxIdleTimeMS, ok := dbConfig["maxIdleTimeMS"].(int64); ok && maxIdleTimeMS > 0 {
 				params = append(params, fmt.Sprintf("maxIdleTimeMS=%d", maxIdleTimeMS))
@@ -505,16 +507,7 @@ func (c *Config) Ping() bool {
 	return c.ping
 }
 
-func (c *Config) Dynamic() string {
-	return c.dynamic
-}
-
 func (c *Config) Proxies(log *zap.Logger) ([]*proxy.Proxy, error) {
-	d, err := proxy.NewDynamic(c.dynamic, log)
-	if err != nil {
-		return nil, err
-	}
-
 	mongos := make(map[string]*mongo.Mongo)
 	for _, client := range c.clients {
 		m, err := mongo.Connect(log, c.metrics, client.opts, c.ping)
@@ -528,9 +521,63 @@ func (c *Config) Proxies(log *zap.Logger) ([]*proxy.Proxy, error) {
 		return mongos[address]
 	}
 
+	// Create database router for wildcard database support
+	databaseRouter := proxy.NewDatabaseRouter(log)
+
+	// Add database routes with precedence: exact match → wildcard match
+	databases := c.GetDatabases()
+	for dbName, dbConfig := range databases {
+		// Create MongoDB client for this database
+		var mongoClient *mongo.Mongo
+		var err error
+		if dbConfig.ConnectionString != "" {
+			// Use connection string
+			opts := options.Client().ApplyURI(dbConfig.ConnectionString)
+			mongoClient, err = mongo.Connect(log, c.metrics, opts, c.ping)
+			if err != nil {
+				return nil, fmt.Errorf("failed to connect to database %s: %v", dbName, err)
+			}
+		} else {
+			// Use structured config
+			connectionString := fmt.Sprintf("mongodb://%s:%d/%s", dbConfig.Host, dbConfig.Port, dbConfig.DBName)
+			opts := options.Client().ApplyURI(connectionString)
+			mongoClient, err = mongo.Connect(log, c.metrics, opts, c.ping)
+			if err != nil {
+				return nil, fmt.Errorf("failed to connect to database %s: %v", dbName, err)
+			}
+		}
+
+		// Add route to database router
+		var connectionString string
+		if dbConfig.ConnectionString != "" {
+			connectionString = dbConfig.ConnectionString
+		} else {
+			connectionString = fmt.Sprintf("mongodb://%s:%d/%s", dbConfig.Host, dbConfig.Port, dbConfig.DBName)
+		}
+
+		routeConfig := &proxy.RouteConfig{
+			DatabaseName:     dbName,
+			Label:            dbName,
+			MongoClient:      mongoClient,
+			ConnectionString: connectionString,
+		}
+		databaseRouter.AddRoute(dbName, routeConfig)
+	}
+
+	// Create pool manager
+	poolManager := pool.NewManager(
+		log,
+		c.metrics,
+		c.tomlConfig.Mongobouncer.PoolMode,
+		c.tomlConfig.Mongobouncer.MinPoolSize,
+		c.tomlConfig.Mongobouncer.MaxPoolSize,
+		c.tomlConfig.Mongobouncer.ReservePoolSize,
+		c.tomlConfig.Mongobouncer.MaxClientConn,
+	)
+
 	var proxies []*proxy.Proxy
 	for _, client := range c.clients {
-		p, err := proxy.NewProxy(log, c.metrics, client.label, c.network, client.address, c.unlink, mongoLookup, d)
+		p, err := proxy.NewProxy(log, c.metrics, client.label, c.network, client.address, c.unlink, mongoLookup, poolManager, databaseRouter)
 		if err != nil {
 			return nil, err
 		}

@@ -17,6 +17,7 @@ import (
 	"go.mongodb.org/mongo-driver/bson/primitive"
 	"go.mongodb.org/mongo-driver/mongo"
 	"go.mongodb.org/mongo-driver/mongo/options"
+	"go.mongodb.org/mongo-driver/mongo/readconcern"
 	"go.mongodb.org/mongo-driver/mongo/readpref"
 )
 
@@ -49,13 +50,14 @@ type TestSuite struct {
 
 // MongoTester runs comprehensive MongoDB tests
 type MongoTester struct {
-	client    *mongo.Client
-	database  *mongo.Database
-	testSuite *TestSuite
+	client       *mongo.Client
+	database     *mongo.Database
+	generateHTML bool
+	testSuite    *TestSuite
 }
 
 // NewMongoTester creates a new tester instance
-func NewMongoTester(connectionString, databaseName string) (*MongoTester, error) {
+func NewMongoTester(connectionString, databaseName string, generateHTML bool) (*MongoTester, error) {
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 
@@ -68,12 +70,12 @@ func NewMongoTester(connectionString, databaseName string) (*MongoTester, error)
 	if err := client.Ping(ctx, readpref.Primary()); err != nil {
 		return nil, fmt.Errorf("failed to ping MongoDB: %w", err)
 	}
-
 	database := client.Database(databaseName)
 
 	tester := &MongoTester{
-		client:   client,
-		database: database,
+		client:       client,
+		database:     database,
+		generateHTML: generateHTML,
 		testSuite: &TestSuite{
 			ConnectionString: maskConnectionString(connectionString),
 			DatabaseName:     databaseName,
@@ -233,8 +235,10 @@ func (t *MongoTester) RunAllTests() error {
 	t.calculateStatistics()
 
 	// Generate reports
-	if err := t.generateHTMLReport(); err != nil {
-		fmt.Printf("⚠️ Warning: Failed to generate HTML report: %v\n", err)
+	if t.generateHTML {
+		if err := t.generateHTMLReport(); err != nil {
+			fmt.Printf("⚠️ Warning: Failed to generate HTML report: %v\n", err)
+		}
 	}
 
 	// Cleanup
@@ -498,14 +502,95 @@ func (t *MongoTester) testSimpleTransaction() (interface{}, error) {
 	return result, nil
 }
 
-func (t *MongoTester) testFindOneAndReplace() (interface{}, error) { return "Test completed", nil }
-func (t *MongoTester) testFindOneAndDelete() (interface{}, error)  { return "Test completed", nil }
-func (t *MongoTester) testUpsert() (interface{}, error)            { return "Test completed", nil }
-func (t *MongoTester) testBulkWrite() (interface{}, error)         { return "Test completed", nil }
-func (t *MongoTester) testCountDocuments() (interface{}, error)    { return int64(5), nil }
+func (t *MongoTester) testFindOneAndReplace() (interface{}, error) {
+	coll := t.database.Collection("users")
+	filter := bson.M{"name": "David Wilson"}
+	replacement := bson.M{
+		"name":        "David Wilson",
+		"email":       "david.wilson@example.com",
+		"age":         28,
+		"status":      "active",
+		"lastUpdated": time.Now(),
+	}
+	opts := options.FindOneAndReplace().SetReturnDocument(options.After)
 
-// Additional test implementations would continue here...
-// (Abbreviated for file size - in practice, all 80+ tests would be fully implemented)
+	var result bson.M
+	err := coll.FindOneAndReplace(context.Background(), filter, replacement, opts).Decode(&result)
+	return result, err
+}
+
+func (t *MongoTester) testFindOneAndDelete() (interface{}, error) {
+	coll := t.database.Collection("users")
+
+	// First, insert a document to delete
+	_, err := coll.InsertOne(context.Background(), bson.M{
+		"name":   "Test Delete User",
+		"email":  "testdelete@example.com",
+		"age":    25,
+		"status": "active",
+	})
+	if err != nil {
+		return nil, err
+	}
+
+	// Now find and delete it
+	filter := bson.M{"name": "Test Delete User"}
+	opts := options.FindOneAndDelete().SetProjection(bson.M{"name": 1, "email": 1})
+
+	var result bson.M
+	err = coll.FindOneAndDelete(context.Background(), filter, opts).Decode(&result)
+	return result, err
+}
+
+func (t *MongoTester) testUpsert() (interface{}, error) {
+	coll := t.database.Collection("users")
+	filter := bson.M{"email": "upsert@example.com"}
+	update := bson.M{
+		"$set": bson.M{
+			"name":      "Upsert User",
+			"email":     "upsert@example.com",
+			"age":       30,
+			"status":    "active",
+			"createdAt": time.Now(),
+		},
+		"$setOnInsert": bson.M{
+			"lastLogin": time.Now(),
+		},
+	}
+	opts := options.Update().SetUpsert(true)
+	return coll.UpdateOne(context.Background(), filter, update, opts)
+}
+
+func (t *MongoTester) testBulkWrite() (interface{}, error) {
+	coll := t.database.Collection("users")
+	operations := []mongo.WriteModel{
+		mongo.NewInsertOneModel().SetDocument(bson.M{
+			"name":   "Bulk User 1",
+			"email":  "bulk1@example.com",
+			"age":    25,
+			"status": "active",
+		}),
+		mongo.NewInsertOneModel().SetDocument(bson.M{
+			"name":   "Bulk User 2",
+			"email":  "bulk2@example.com",
+			"age":    30,
+			"status": "pending",
+		}),
+		mongo.NewUpdateOneModel().
+			SetFilter(bson.M{"status": "pending"}).
+			SetUpdate(bson.M{"$set": bson.M{"status": "active"}}),
+		mongo.NewDeleteOneModel().SetFilter(bson.M{"email": "bulk1@example.com"}),
+	}
+	opts := options.BulkWrite().SetOrdered(false)
+	return coll.BulkWrite(context.Background(), operations, opts)
+}
+
+func (t *MongoTester) testCountDocuments() (interface{}, error) {
+	coll := t.database.Collection("users")
+	filter := bson.M{"status": "active"}
+	opts := options.Count().SetLimit(1000)
+	return coll.CountDocuments(context.Background(), filter, opts)
+}
 
 func (t *MongoTester) testRangeQuery() (interface{}, error) {
 	coll := t.database.Collection("products")
@@ -632,21 +717,282 @@ func (t *MongoTester) testAggregateProject() (interface{}, error) {
 	return coll.Aggregate(context.Background(), pipeline)
 }
 
-// Abbreviated implementations for remaining tests
-func (t *MongoTester) testAggregateLimitSkip() (interface{}, error)     { return "Test completed", nil }
-func (t *MongoTester) testAggregateLookup() (interface{}, error)        { return "Test completed", nil }
-func (t *MongoTester) testAggregateUnwind() (interface{}, error)        { return "Test completed", nil }
-func (t *MongoTester) testAggregateAddFields() (interface{}, error)     { return "Test completed", nil }
-func (t *MongoTester) testAggregateReplaceRoot() (interface{}, error)   { return "Test completed", nil }
-func (t *MongoTester) testAggregateFacet() (interface{}, error)         { return "Test completed", nil }
-func (t *MongoTester) testAggregateBucket() (interface{}, error)        { return "Test completed", nil }
-func (t *MongoTester) testAggregateSample() (interface{}, error)        { return "Test completed", nil }
-func (t *MongoTester) testAggregateCount() (interface{}, error)         { return "Test completed", nil }
-func (t *MongoTester) testAggregateOut() (interface{}, error)           { return "Test completed", nil }
-func (t *MongoTester) testComplexPipeline() (interface{}, error)        { return "Test completed", nil }
-func (t *MongoTester) testStatisticalAggregation() (interface{}, error) { return "Test completed", nil }
-func (t *MongoTester) testTimeSeriesAggregation() (interface{}, error)  { return "Test completed", nil }
-func (t *MongoTester) testMapReduceAlternative() (interface{}, error)   { return "Test completed", nil }
+// Aggregation test implementations
+func (t *MongoTester) testAggregateLimitSkip() (interface{}, error) {
+	coll := t.database.Collection("users")
+	pipeline := []bson.M{
+		{"$match": bson.M{"status": "active"}},
+		{"$sort": bson.M{"age": -1}},
+		{"$skip": 2},
+		{"$limit": 5},
+	}
+	return coll.Aggregate(context.Background(), pipeline)
+}
+
+func (t *MongoTester) testAggregateLookup() (interface{}, error) {
+	coll := t.database.Collection("orders")
+	pipeline := []bson.M{
+		{"$lookup": bson.M{
+			"from":         "users",
+			"localField":   "userId",
+			"foreignField": "_id",
+			"as":           "user",
+		}},
+		{"$limit": 3},
+	}
+	return coll.Aggregate(context.Background(), pipeline)
+}
+
+func (t *MongoTester) testAggregateUnwind() (interface{}, error) {
+	coll := t.database.Collection("products")
+	pipeline := []bson.M{
+		{"$match": bson.M{"tags": bson.M{"$exists": true}}},
+		{"$unwind": "$tags"},
+		{"$group": bson.M{
+			"_id":   "$tags",
+			"count": bson.M{"$sum": 1},
+		}},
+		{"$sort": bson.M{"count": -1}},
+	}
+	return coll.Aggregate(context.Background(), pipeline)
+}
+
+func (t *MongoTester) testAggregateAddFields() (interface{}, error) {
+	coll := t.database.Collection("products")
+	pipeline := []bson.M{
+		{"$addFields": bson.M{
+			"priceCategory": bson.M{
+				"$cond": bson.M{
+					"if":   bson.M{"$gte": []interface{}{"$price", 100}},
+					"then": "expensive",
+					"else": "affordable",
+				},
+			},
+			"discountedPrice": bson.M{
+				"$multiply": []interface{}{"$price", 0.9},
+			},
+		}},
+		{"$limit": 5},
+	}
+	return coll.Aggregate(context.Background(), pipeline)
+}
+
+func (t *MongoTester) testAggregateReplaceRoot() (interface{}, error) {
+	coll := t.database.Collection("users")
+	pipeline := []bson.M{
+		{"$match": bson.M{"profile": bson.M{"$exists": true}}},
+		{"$replaceRoot": bson.M{
+			"newRoot": "$profile",
+		}},
+		{"$limit": 3},
+	}
+	return coll.Aggregate(context.Background(), pipeline)
+}
+
+func (t *MongoTester) testAggregateFacet() (interface{}, error) {
+	coll := t.database.Collection("users")
+	pipeline := []bson.M{
+		{"$facet": bson.M{
+			"activeUsers": []bson.M{
+				{"$match": bson.M{"status": "active"}},
+				{"$count": "total"},
+			},
+			"ageGroups": []bson.M{
+				{"$bucket": bson.M{
+					"groupBy":    "$age",
+					"boundaries": []int{0, 25, 50, 100},
+					"default":    "other",
+					"output": bson.M{
+						"count":  bson.M{"$sum": 1},
+						"avgAge": bson.M{"$avg": "$age"},
+					},
+				}},
+			},
+		}},
+	}
+	return coll.Aggregate(context.Background(), pipeline)
+}
+
+func (t *MongoTester) testAggregateBucket() (interface{}, error) {
+	coll := t.database.Collection("products")
+	pipeline := []bson.M{
+		{"$bucket": bson.M{
+			"groupBy":    "$price",
+			"boundaries": []float64{0, 50, 100, 200, 500},
+			"default":    "expensive",
+			"output": bson.M{
+				"count":    bson.M{"$sum": 1},
+				"avgPrice": bson.M{"$avg": "$price"},
+				"products": bson.M{"$push": "$name"},
+			},
+		}},
+	}
+	return coll.Aggregate(context.Background(), pipeline)
+}
+
+func (t *MongoTester) testAggregateSample() (interface{}, error) {
+	coll := t.database.Collection("users")
+	pipeline := []bson.M{
+		{"$sample": bson.M{"size": 3}},
+		{"$project": bson.M{
+			"name":  1,
+			"email": 1,
+			"age":   1,
+		}},
+	}
+	return coll.Aggregate(context.Background(), pipeline)
+}
+
+func (t *MongoTester) testAggregateCount() (interface{}, error) {
+	coll := t.database.Collection("users")
+	pipeline := []bson.M{
+		{"$match": bson.M{"status": "active"}},
+		{"$count": "activeUsers"},
+	}
+	return coll.Aggregate(context.Background(), pipeline)
+}
+
+func (t *MongoTester) testAggregateOut() (interface{}, error) {
+	coll := t.database.Collection("users")
+	pipeline := []bson.M{
+		{"$match": bson.M{"status": "active"}},
+		{"$project": bson.M{
+			"name":  1,
+			"email": 1,
+			"age":   1,
+		}},
+		{"$out": "active_users_summary"},
+	}
+	return coll.Aggregate(context.Background(), pipeline)
+}
+
+func (t *MongoTester) testComplexPipeline() (interface{}, error) {
+	coll := t.database.Collection("orders")
+	pipeline := []bson.M{
+		{"$lookup": bson.M{
+			"from":         "users",
+			"localField":   "userId",
+			"foreignField": "_id",
+			"as":           "user",
+		}},
+		{"$unwind": "$user"},
+		{"$lookup": bson.M{
+			"from":         "products",
+			"localField":   "items.productId",
+			"foreignField": "_id",
+			"as":           "productDetails",
+		}},
+		{"$addFields": bson.M{
+			"totalValue": bson.M{
+				"$sum": "$items.price",
+			},
+			"userAge": "$user.age",
+		}},
+		{"$group": bson.M{
+			"_id":           "$user.status",
+			"avgOrderValue": bson.M{"$avg": "$totalValue"},
+			"totalOrders":   bson.M{"$sum": 1},
+			"avgUserAge":    bson.M{"$avg": "$userAge"},
+		}},
+		{"$sort": bson.M{"avgOrderValue": -1}},
+	}
+	return coll.Aggregate(context.Background(), pipeline)
+}
+
+func (t *MongoTester) testStatisticalAggregation() (interface{}, error) {
+	coll := t.database.Collection("products")
+	pipeline := []bson.M{
+		{"$group": bson.M{
+			"_id":         "$category",
+			"count":       bson.M{"$sum": 1},
+			"avgPrice":    bson.M{"$avg": "$price"},
+			"minPrice":    bson.M{"$min": "$price"},
+			"maxPrice":    bson.M{"$max": "$price"},
+			"stdDevPrice": bson.M{"$stdDevPop": "$price"},
+			"sumPrice":    bson.M{"$sum": "$price"},
+		}},
+		{"$addFields": bson.M{
+			"priceRange": bson.M{
+				"$subtract": []interface{}{"$maxPrice", "$minPrice"},
+			},
+			"priceVariance": bson.M{
+				"$multiply": []interface{}{"$stdDevPrice", "$stdDevPrice"},
+			},
+			"priceCoefficient": bson.M{
+				"$cond": bson.M{
+					"if":   bson.M{"$gt": []interface{}{"$avgPrice", 0}},
+					"then": bson.M{"$divide": []interface{}{"$stdDevPrice", "$avgPrice"}},
+					"else": 0,
+				},
+			},
+		}},
+		{"$sort": bson.M{"avgPrice": -1}},
+	}
+	return coll.Aggregate(context.Background(), pipeline)
+}
+
+func (t *MongoTester) testTimeSeriesAggregation() (interface{}, error) {
+	coll := t.database.Collection("events")
+	pipeline := []bson.M{
+		{"$match": bson.M{
+			"timestamp": bson.M{
+				"$gte": time.Now().AddDate(0, 0, -30),
+			},
+		}},
+		{"$group": bson.M{
+			"_id": bson.M{
+				"year":  bson.M{"$year": "$timestamp"},
+				"month": bson.M{"$month": "$timestamp"},
+				"day":   bson.M{"$dayOfMonth": "$timestamp"},
+			},
+			"events":      bson.M{"$sum": 1},
+			"uniqueUsers": bson.M{"$addToSet": "$userId"},
+		}},
+		{"$addFields": bson.M{
+			"uniqueUserCount": bson.M{"$size": "$uniqueUsers"},
+		}},
+		{"$sort": bson.M{"_id.year": 1, "_id.month": 1, "_id.day": 1}},
+		{"$limit": 10},
+	}
+	return coll.Aggregate(context.Background(), pipeline)
+}
+
+func (t *MongoTester) testMapReduceAlternative() (interface{}, error) {
+	coll := t.database.Collection("reviews")
+	pipeline := []bson.M{
+		{"$group": bson.M{
+			"_id":          "$productId",
+			"avgRating":    bson.M{"$avg": "$rating"},
+			"totalReviews": bson.M{"$sum": 1},
+			"minRating":    bson.M{"$min": "$rating"},
+			"maxRating":    bson.M{"$max": "$rating"},
+		}},
+		{"$addFields": bson.M{
+			"ratingCategory": bson.M{
+				"$switch": bson.M{
+					"branches": []bson.M{
+						{"case": bson.M{"$lt": []interface{}{"$avgRating", 2}}, "then": "poor"},
+						{"case": bson.M{"$lt": []interface{}{"$avgRating", 3}}, "then": "fair"},
+						{"case": bson.M{"$lt": []interface{}{"$avgRating", 4}}, "then": "good"},
+						{"case": bson.M{"$lt": []interface{}{"$avgRating", 5}}, "then": "very good"},
+					},
+					"default": "excellent",
+				},
+			},
+		}},
+		{"$project": bson.M{
+			"productId":      "$_id",
+			"avgRating":      1,
+			"totalReviews":   1,
+			"minRating":      1,
+			"maxRating":      1,
+			"ratingCategory": 1,
+		}},
+		{"$sort": bson.M{"avgRating": -1}},
+		{"$limit": 5},
+	}
+	return coll.Aggregate(context.Background(), pipeline)
+}
 
 // Index tests
 func (t *MongoTester) testCreateCompoundIndex() (interface{}, error) {
@@ -822,16 +1168,245 @@ func (t *MongoTester) testMultipleCursors() (interface{}, error) {
 	return results, nil
 }
 
-// Remaining transaction tests (abbreviated)
 func (t *MongoTester) testMultiCollectionTransaction() (interface{}, error) {
-	return "Test completed", nil
+	session, err := t.client.StartSession()
+	if err != nil {
+		return "Transaction not supported", nil
+	}
+	defer session.EndSession(context.Background())
+
+	result, err := session.WithTransaction(context.Background(), func(sc mongo.SessionContext) (interface{}, error) {
+		// Insert into users collection
+		usersColl := t.database.Collection("users")
+		userResult, err := usersColl.InsertOne(sc, bson.M{
+			"name":   "Multi Collection User",
+			"email":  "multiuser@example.com",
+			"age":    35,
+			"status": "active",
+		})
+		if err != nil {
+			return nil, err
+		}
+
+		// Insert into orders collection
+		ordersColl := t.database.Collection("orders")
+		_, err = ordersColl.InsertOne(sc, bson.M{
+			"userId": userResult.InsertedID,
+			"items": []bson.M{{
+				"productId": primitive.NewObjectID(),
+				"quantity":  2,
+				"price":     25.99,
+			}},
+			"total":  51.98,
+			"status": "pending",
+		})
+		return "Multi-collection transaction completed", err
+	})
+
+	if err != nil {
+		if strings.Contains(err.Error(), "Transaction numbers are only allowed on a replica set member") {
+			return "Transaction not supported (standalone MongoDB)", nil
+		}
+		return nil, err
+	}
+
+	return result, nil
 }
-func (t *MongoTester) testTransactionRollback() (interface{}, error)    { return "Test completed", nil }
-func (t *MongoTester) testTransactionReadConcern() (interface{}, error) { return "Test completed", nil }
+
+func (t *MongoTester) testTransactionRollback() (interface{}, error) {
+	session, err := t.client.StartSession()
+	if err != nil {
+		return "Transaction not supported", nil
+	}
+	defer session.EndSession(context.Background())
+
+	result, err := session.WithTransaction(context.Background(), func(sc mongo.SessionContext) (interface{}, error) {
+		coll := t.database.Collection("users")
+
+		// Insert a document
+		_, err := coll.InsertOne(sc, bson.M{
+			"name":   "Rollback Test User",
+			"email":  "rollback@example.com",
+			"age":    25,
+			"status": "active",
+		})
+		if err != nil {
+			return nil, err
+		}
+
+		// Intentionally cause an error to trigger rollback
+		// Try to insert a document with duplicate email (if unique index exists)
+		_, err = coll.InsertOne(sc, bson.M{
+			"name":   "Duplicate Email User",
+			"email":  "rollback@example.com", // Same email to cause error
+			"age":    30,
+			"status": "active",
+		})
+
+		// This should cause the transaction to rollback
+		return nil, err
+	})
+
+	if err != nil {
+		if strings.Contains(err.Error(), "Transaction numbers are only allowed on a replica set member") {
+			return "Transaction not supported (standalone MongoDB)", nil
+		}
+		// Transaction rollback is expected behavior
+		return "Transaction rollback completed as expected", nil
+	}
+
+	return result, nil
+}
+
+func (t *MongoTester) testTransactionReadConcern() (interface{}, error) {
+	session, err := t.client.StartSession()
+	if err != nil {
+		return "Transaction not supported", nil
+	}
+	defer session.EndSession(context.Background())
+
+	// Set read concern for the session
+	sessionOptions := options.Session().SetDefaultReadConcern(readconcern.Majority())
+	session, err = t.client.StartSession(sessionOptions)
+	if err != nil {
+		return "Transaction not supported", nil
+	}
+	defer session.EndSession(context.Background())
+
+	result, err := session.WithTransaction(context.Background(), func(sc mongo.SessionContext) (interface{}, error) {
+		coll := t.database.Collection("users")
+
+		// Read with majority read concern
+		var user bson.M
+		err := coll.FindOne(sc, bson.M{"status": "active"}).Decode(&user)
+		if err != nil {
+			return nil, err
+		}
+
+		// Update the document
+		_, err = coll.UpdateOne(sc, bson.M{"_id": user["_id"]}, bson.M{
+			"$set": bson.M{"lastRead": time.Now()},
+		})
+		return "Read concern transaction completed", err
+	})
+
+	if err != nil {
+		if strings.Contains(err.Error(), "Transaction numbers are only allowed on a replica set member") {
+			return "Transaction not supported (standalone MongoDB)", nil
+		}
+		return nil, err
+	}
+
+	return result, nil
+}
+
 func (t *MongoTester) testTransactionWriteConcern() (interface{}, error) {
-	return "Test completed", nil
+	session, err := t.client.StartSession()
+	if err != nil {
+		return "Transaction not supported", nil
+	}
+	defer session.EndSession(context.Background())
+
+	result, err := session.WithTransaction(context.Background(), func(sc mongo.SessionContext) (interface{}, error) {
+		coll := t.database.Collection("users")
+
+		// Write operation in transaction
+		_, err := coll.InsertOne(sc, bson.M{
+			"name":   "Write Concern User",
+			"email":  "writeconcern@example.com",
+			"age":    28,
+			"status": "active",
+		})
+		return "Write concern transaction completed", err
+	})
+
+	if err != nil {
+		if strings.Contains(err.Error(), "Transaction numbers are only allowed on a replica set member") {
+			return "Transaction not supported (standalone MongoDB)", nil
+		}
+		return nil, err
+	}
+
+	return result, nil
 }
-func (t *MongoTester) testComplexTransaction() (interface{}, error) { return "Test completed", nil }
+
+func (t *MongoTester) testComplexTransaction() (interface{}, error) {
+	session, err := t.client.StartSession()
+	if err != nil {
+		return "Transaction not supported", nil
+	}
+	defer session.EndSession(context.Background())
+
+	result, err := session.WithTransaction(context.Background(), func(sc mongo.SessionContext) (interface{}, error) {
+		// Complex transaction involving multiple operations
+		usersColl := t.database.Collection("users")
+		ordersColl := t.database.Collection("orders")
+		productsColl := t.database.Collection("products")
+
+		// 1. Create a new user
+		userResult, err := usersColl.InsertOne(sc, bson.M{
+			"name":    "Complex Transaction User",
+			"email":   "complex@example.com",
+			"age":     32,
+			"status":  "active",
+			"balance": 100.0,
+		})
+		if err != nil {
+			return nil, err
+		}
+
+		// 2. Find a product to order
+		var product bson.M
+		err = productsColl.FindOne(sc, bson.M{"category": "electronics"}).Decode(&product)
+		if err != nil {
+			return nil, err
+		}
+
+		// 3. Create an order
+		orderResult, err := ordersColl.InsertOne(sc, bson.M{
+			"userId": userResult.InsertedID,
+			"items": []bson.M{{
+				"productId": product["_id"],
+				"quantity":  1,
+				"price":     product["price"],
+			}},
+			"total":     product["price"],
+			"status":    "pending",
+			"createdAt": time.Now(),
+		})
+		if err != nil {
+			return nil, err
+		}
+
+		// 4. Update user balance
+		productPrice, ok := product["price"].(float64)
+		if !ok {
+			productPrice = 0.0
+		}
+		_, err = usersColl.UpdateOne(sc, bson.M{"_id": userResult.InsertedID}, bson.M{
+			"$inc": bson.M{"balance": -productPrice},
+		})
+		if err != nil {
+			return nil, err
+		}
+
+		// 5. Update order status
+		_, err = ordersColl.UpdateOne(sc, bson.M{"_id": orderResult.InsertedID}, bson.M{
+			"$set": bson.M{"status": "completed"},
+		})
+
+		return "Complex transaction completed successfully", err
+	})
+
+	if err != nil {
+		if strings.Contains(err.Error(), "Transaction numbers are only allowed on a replica set member") {
+			return "Transaction not supported (standalone MongoDB)", nil
+		}
+		return nil, err
+	}
+
+	return result, nil
+}
 
 // Admin operations
 func (t *MongoTester) testListCollections() (interface{}, error) {
@@ -1034,9 +1609,9 @@ func (t *MongoTester) calculateStatistics() {
 
 // Print summary
 func (t *MongoTester) printSummary() {
-	fmt.Printf("\n" + strings.Repeat("=", 60) + "\n")
+	fmt.Printf("\n%s\n", strings.Repeat("=", 60))
 	fmt.Printf("🎯 MONGODB COMPREHENSIVE TEST RESULTS\n")
-	fmt.Printf(strings.Repeat("=", 60) + "\n")
+	fmt.Printf("%s\n", strings.Repeat("=", 60))
 	fmt.Printf("📊 Total Tests: %d\n", t.testSuite.TotalTests)
 	fmt.Printf("✅ Passed: %d (%.1f%%)\n",
 		t.testSuite.PassedTests,
@@ -1082,8 +1657,10 @@ func (t *MongoTester) printSummary() {
 		}
 	}
 
-	fmt.Printf("\n📄 HTML Report: comprehensive_mongo_test_report.html\n")
-	fmt.Printf(strings.Repeat("=", 60) + "\n")
+	if t.generateHTML {
+		fmt.Printf("\n📄 HTML Report: comprehensive_mongo_test_report.html\n")
+	}
+	fmt.Printf("%s\n", strings.Repeat("=", 60))
 }
 
 // Close database connection
@@ -1101,6 +1678,7 @@ func main() {
 	var (
 		connectionString = flag.String("connection", "mongodb://localhost:27017", "MongoDB connection string")
 		databaseName     = flag.String("database", "mongobouncer_test", "Database name for testing")
+		generateHTML     = flag.Bool("generate-html", false, "Generate HTML report")
 		help             = flag.Bool("help", false, "Show help message")
 	)
 
@@ -1113,15 +1691,15 @@ func main() {
 		fmt.Println("This tool runs 80+ MongoDB operations to validate MongoBouncer functionality.")
 		fmt.Println()
 		fmt.Println("Usage:")
-		fmt.Println("  go run test/comprehensive/main.go test/comprehensive/report.go -connection <uri> -database <name>")
+		fmt.Println("  go run test/comprehensive/main.go test/comprehensive/report.go --generate-html -connection <uri> -database <name>")
 		fmt.Println()
 		fmt.Println("Environment Variables:")
 		fmt.Println("  MONGODB_CONNECTION_STRING or MONGO_URL - Connection string")
 		fmt.Println("  MONGODB_DATABASE or MONGO_DB - Database name")
 		fmt.Println()
 		fmt.Println("Examples:")
-		fmt.Println("  go run test/comprehensive/main.go test/comprehensive/report.go -connection mongodb://localhost:27016")
-		fmt.Println("  MONGO_URL=mongodb://localhost:27016 go run test/comprehensive/main.go test/comprehensive/report.go")
+		fmt.Println("  go run test/comprehensive/main.go test/comprehensive/report.go --generate-html -connection mongodb://localhost:27016")
+		fmt.Println("  MONGO_URL=mongodb://localhost:27016 go run test/comprehensive/main.go test/comprehensive/report.go --generate-html")
 		fmt.Println()
 		fmt.Println("Test Categories:")
 		fmt.Println("  • CRUD Operations (15 tests)")
@@ -1150,7 +1728,7 @@ func main() {
 	}
 
 	// Create and run tester
-	tester, err := NewMongoTester(*connectionString, *databaseName)
+	tester, err := NewMongoTester(*connectionString, *databaseName, *generateHTML)
 	if err != nil {
 		log.Fatalf("❌ Failed to create tester: %v", err)
 	}
@@ -1161,5 +1739,7 @@ func main() {
 	}
 
 	fmt.Println("\n🎉 Comprehensive test suite completed!")
-	fmt.Println("📄 Check comprehensive_mongo_test_report.html for detailed results")
+	if tester.generateHTML {
+		fmt.Println("📄 Check comprehensive_mongo_test_report.html for detailed results")
+	}
 }

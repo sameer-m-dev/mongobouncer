@@ -84,7 +84,8 @@ test_db = "mongodb://localhost:27017/test?maxPoolSize=5"
 		tomlContent := `
 [mongobouncer]
 listen_port = 27020
-default_pool_size = 50
+min_pool_size = 10
+max_pool_size = 50
 max_client_conn = 200
 
 [databases.structured_db]
@@ -111,7 +112,8 @@ max_user_connections = 25
 		// Test main config
 		mainConfig := config.GetMainConfig()
 		assert.Equal(t, 27020, mainConfig.ListenPort)
-		assert.Equal(t, 50, mainConfig.DefaultPoolSize)
+		assert.Equal(t, 10, mainConfig.MinPoolSize)
+		assert.Equal(t, 50, mainConfig.MaxPoolSize)
 		assert.Equal(t, 200, mainConfig.MaxClientConn)
 
 		// Test structured database

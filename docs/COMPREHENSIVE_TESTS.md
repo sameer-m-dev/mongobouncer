@@ -167,7 +167,7 @@ Comprehensive HTML report (`comprehensive_mongo_test_report.html`) includes:
 
 ### Command Line Flags
 - `-connection`: MongoDB connection string (default: mongodb://localhost:27017)
-- `-database`: Database name (default: comprehensive_test_db)
+- `-database`: Database name (default: mongobouncer_test)
 - `-help`: Show detailed help message
 
 ## 📋 Sample Test Data

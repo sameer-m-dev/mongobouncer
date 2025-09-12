@@ -2,6 +2,7 @@ package proxy
 
 import (
 	"fmt"
+	"strings"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -304,4 +305,13 @@ func (m *mockOperation) CommandAndCollection() (mongo.Command, string) {
 	return mongo.Command(m.command), m.collection
 }
 func (m *mockOperation) TransactionDetails() *mongo.TransactionDetails { return nil }
-func (m *mockOperation) String() string                                { return "mock" }
+func (m *mockOperation) DatabaseName() string {
+	if m.collection != "" {
+		parts := strings.SplitN(m.collection, ".", 2)
+		if len(parts) >= 2 {
+			return parts[0]
+		}
+	}
+	return ""
+}
+func (m *mockOperation) String() string { return "mock" }

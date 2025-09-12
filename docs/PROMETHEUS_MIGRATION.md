@@ -115,7 +115,7 @@ ok  github.com/sameer-m-dev/mongobouncer/util 0.518s
 
 ### Build Verification
 ```bash
-$ go build -o mongobouncer .
+$ go build -o bin/mongobouncer .
 ✅ Build successful
 
 $ ./mongobouncer -help

@@ -10,6 +10,7 @@ import (
 	"go.uber.org/zap"
 
 	mongobouncer "github.com/sameer-m-dev/mongobouncer/mongo"
+	"github.com/sameer-m-dev/mongobouncer/util"
 )
 
 // PoolMode represents the connection pooling mode
@@ -29,9 +30,11 @@ const (
 // Manager manages connection pools for different databases
 type Manager struct {
 	logger        *zap.Logger
+	metrics       *util.MetricsClient
 	pools         map[string]*ConnectionPool
 	defaultMode   PoolMode
-	defaultSize   int
+	minPoolSize   int
+	maxPoolSize   int
 	reserveSize   int
 	maxClientConn int
 	activeClients map[string]*ClientConnection
@@ -51,6 +54,7 @@ type ConnectionPool struct {
 	waitQueue   chan chan *PooledConnection
 	mutex       sync.RWMutex
 	logger      *zap.Logger
+	metrics     *util.MetricsClient
 	stats       *PoolStats
 }
 
@@ -90,7 +94,7 @@ type PoolStats struct {
 }
 
 // NewManager creates a new pool manager
-func NewManager(logger *zap.Logger, defaultMode string, defaultSize, reserveSize, maxClientConn int) *Manager {
+func NewManager(logger *zap.Logger, metrics *util.MetricsClient, defaultMode string, minPoolSize, maxPoolSize, reserveSize, maxClientConn int) *Manager {
 	mode := SessionMode
 	switch defaultMode {
 	case "transaction":
@@ -101,9 +105,11 @@ func NewManager(logger *zap.Logger, defaultMode string, defaultSize, reserveSize
 
 	return &Manager{
 		logger:        logger,
+		metrics:       metrics,
 		pools:         make(map[string]*ConnectionPool),
 		defaultMode:   mode,
-		defaultSize:   defaultSize,
+		minPoolSize:   minPoolSize,
+		maxPoolSize:   maxPoolSize,
 		reserveSize:   reserveSize,
 		maxClientConn: maxClientConn,
 		activeClients: make(map[string]*ClientConnection),
@@ -133,7 +139,7 @@ func (m *Manager) GetPool(database string, mongoClient *mongobouncer.Mongo, mode
 		mode = m.defaultMode
 	}
 	if maxSize == 0 {
-		maxSize = m.defaultSize
+		maxSize = m.maxPoolSize
 	}
 
 	pool = &ConnectionPool{
@@ -146,6 +152,7 @@ func (m *Manager) GetPool(database string, mongoClient *mongobouncer.Mongo, mode
 		inUse:       make(map[string]*PooledConnection),
 		waitQueue:   make(chan chan *PooledConnection, 1000),
 		logger:      m.logger,
+		metrics:     m.metrics,
 		stats:       &PoolStats{},
 	}
 
@@ -165,8 +172,13 @@ func (m *Manager) RegisterClient(clientID, username, database string, poolMode P
 	m.clientMutex.Lock()
 	defer m.clientMutex.Unlock()
 
-	// Check max client connections
-	if len(m.activeClients) >= m.maxClientConn {
+	// Check if client already exists
+	if client, exists := m.activeClients[clientID]; exists {
+		return client, nil
+	}
+
+	// Check max client connections (0 means unlimited)
+	if m.maxClientConn > 0 && len(m.activeClients) >= m.maxClientConn {
 		return nil, errors.New("max client connections reached")
 	}
 
@@ -206,7 +218,7 @@ func (m *Manager) UnregisterClient(clientID string) {
 }
 
 // GetConnection gets a connection for a client based on pool mode
-func (m *Manager) GetConnection(clientID string, database string, isTransaction bool, transactionID string) (*PooledConnection, error) {
+func (m *Manager) GetConnection(clientID string, database string, mongoClient *mongobouncer.Mongo, isTransaction bool, transactionID string) (*PooledConnection, error) {
 	m.clientMutex.RLock()
 	client, exists := m.activeClients[clientID]
 	m.clientMutex.RUnlock()
@@ -222,8 +234,7 @@ func (m *Manager) GetConnection(clientID string, database string, isTransaction 
 	client.LastActivity = time.Now()
 
 	// Get the pool for the database
-	// TODO: This needs to be integrated with the router to get the actual MongoClient
-	pool := m.GetPool(database, nil, client.PoolMode, 0)
+	pool := m.GetPool(database, mongoClient, client.PoolMode, 0)
 
 	switch client.PoolMode {
 	case SessionMode:
@@ -285,7 +296,11 @@ func (m *Manager) ReturnConnection(clientID string, conn *PooledConnection, isEn
 
 	switch client.PoolMode {
 	case SessionMode:
-		// Don't return - client keeps connection
+		// In session mode, only return if this is not the assigned connection
+		// or if the client is disconnecting
+		if conn != client.AssignedConn {
+			conn.Pool.Return(conn)
+		}
 
 	case TransactionMode:
 		if isEndOfTransaction && client.TransactionConn == conn {
@@ -306,41 +321,62 @@ func (m *Manager) ReturnConnection(clientID string, conn *PooledConnection, isEn
 // Checkout gets a connection from the pool
 func (p *ConnectionPool) Checkout(clientID string) (*PooledConnection, error) {
 	p.stats.incrementRequests()
+	start := time.Now()
 
 	select {
 	case conn := <-p.available:
 		// Got available connection
-		p.mutex.Lock()
-		conn.InUse = true
-		conn.ClientID = clientID
-		conn.LastUsed = time.Now()
-		p.inUse[conn.ID] = conn
-		p.mutex.Unlock()
+		if conn != nil {
+			p.mutex.Lock()
+			conn.InUse = true
+			conn.ClientID = clientID
+			conn.LastUsed = time.Now()
+			p.inUse[conn.ID] = conn
+			p.mutex.Unlock()
 
-		p.stats.updateCounts(int64(len(p.available)), int64(len(p.inUse)))
-		return conn, nil
+			p.stats.updateCounts(int64(len(p.available)), int64(len(p.inUse)))
+
+			// Record checkout duration
+			if p.metrics != nil {
+				checkoutDuration := time.Since(start).Seconds()
+				tags := []string{fmt.Sprintf("database:%s", p.name)}
+				_ = p.metrics.Distribution("pool_checkout_duration", checkoutDuration, tags, 1)
+			}
+
+			return conn, nil
+		}
+		// If conn is nil, treat as no available connection and fall through
 
 	default:
 		// No available connections
-		if p.canCreateNew() {
-			// Create new connection
-			conn := p.createConnection()
-			if conn != nil {
-				p.mutex.Lock()
-				conn.InUse = true
-				conn.ClientID = clientID
-				conn.LastUsed = time.Now()
-				p.inUse[conn.ID] = conn
-				p.mutex.Unlock()
-
-				p.stats.updateCounts(int64(len(p.available)), int64(len(p.inUse)))
-				return conn, nil
-			}
-		}
-
-		// Wait for connection
-		return p.waitForConnection(clientID)
 	}
+
+	// Try to create new connection
+	if p.canCreateNew() {
+		conn := p.createConnection()
+		if conn != nil {
+			p.mutex.Lock()
+			conn.InUse = true
+			conn.ClientID = clientID
+			conn.LastUsed = time.Now()
+			p.inUse[conn.ID] = conn
+			p.mutex.Unlock()
+
+			p.stats.updateCounts(int64(len(p.available)), int64(len(p.inUse)))
+
+			// Record checkout duration
+			if p.metrics != nil {
+				checkoutDuration := time.Since(start).Seconds()
+				tags := []string{fmt.Sprintf("database:%s", p.name)}
+				_ = p.metrics.Distribution("pool_checkout_duration", checkoutDuration, tags, 1)
+			}
+
+			return conn, nil
+		}
+	}
+
+	// Wait for connection
+	return p.waitForConnection(clientID)
 }
 
 // Return returns a connection to the pool
@@ -368,7 +404,9 @@ func (p *ConnectionPool) Return(conn *PooledConnection) {
 			p.stats.updateCounts(int64(len(p.available)), int64(len(p.inUse)))
 		default:
 			// Pool is full, close the connection
-			p.logger.Debug("Pool full, closing returned connection")
+			p.logger.Debug("Pool full, closing returned connection",
+				zap.String("connection_id", conn.ID))
+			p.closeConnection(conn)
 		}
 	}
 }
@@ -384,18 +422,44 @@ func (p *ConnectionPool) canCreateNew() bool {
 
 // createConnection creates a new pooled connection
 func (p *ConnectionPool) createConnection() *PooledConnection {
-	// TODO: Actually create MongoDB connection
-	// For now, we reuse the existing mongoClient
+	// Check if we have a valid mongo client
+	if p.mongoClient == nil {
+		p.logger.Error("Cannot create connection: mongo client is nil")
+		return nil
+	}
+
+	// Create a new MongoDB client for this connection
+	// This ensures each pooled connection has its own underlying connection
+	client, err := mongobouncer.Connect(p.logger, p.metrics, p.mongoClient.GetClientOptions(), false)
+	if err != nil {
+		p.logger.Error("Failed to create MongoDB connection", zap.Error(err))
+		return nil
+	}
+
 	conn := &PooledConnection{
 		ID:          fmt.Sprintf("%s-%d", p.name, time.Now().UnixNano()),
-		MongoClient: p.mongoClient,
+		MongoClient: client,
 		Pool:        p,
 		CreatedAt:   time.Now(),
 		LastUsed:    time.Now(),
 	}
 
 	p.stats.incrementTotal()
+	p.logger.Debug("Created new pooled connection",
+		zap.String("pool", p.name),
+		zap.String("connection_id", conn.ID))
+
 	return conn
+}
+
+// closeConnection properly closes a MongoDB connection
+func (p *ConnectionPool) closeConnection(conn *PooledConnection) {
+	if conn != nil && conn.MongoClient != nil {
+		p.logger.Debug("Closing pooled connection",
+			zap.String("connection_id", conn.ID))
+		conn.MongoClient.Close()
+		p.stats.decrementTotal()
+	}
 }
 
 // waitForConnection waits for an available connection
@@ -407,7 +471,18 @@ func (p *ConnectionPool) waitForConnection(clientID string) (*PooledConnection, 
 	case p.waitQueue <- waiter:
 		p.stats.incrementWaiting()
 		defer p.stats.decrementWaiting()
+
+		// Record clients waiting for server
+		if p.metrics != nil {
+			tags := []string{fmt.Sprintf("database:%s", p.name)}
+			_ = p.metrics.Gauge("clients_waiting_for_server", float64(len(p.waitQueue)), tags, 1)
+		}
 	default:
+		// Record pool exhaustion event
+		if p.metrics != nil {
+			tags := []string{fmt.Sprintf("database:%s", p.name)}
+			_ = p.metrics.Incr("pool_exhaustion", tags, 1)
+		}
 		return nil, errors.New("wait queue full")
 	}
 
@@ -418,7 +493,19 @@ func (p *ConnectionPool) waitForConnection(clientID string) (*PooledConnection, 
 	start := time.Now()
 	select {
 	case conn := <-waiter:
-		p.stats.addWaitTime(time.Since(start))
+		waitDuration := time.Since(start)
+		p.stats.addWaitTime(waitDuration)
+
+		// Record pool connection wait time
+		if p.metrics != nil {
+			tags := []string{fmt.Sprintf("database:%s", p.name)}
+			_ = p.metrics.Distribution("pool_connection_wait", waitDuration.Seconds(), tags, 1)
+		}
+
+		// Check if connection creation failed
+		if conn == nil {
+			return nil, errors.New("connection creation failed")
+		}
 
 		p.mutex.Lock()
 		conn.InUse = true
@@ -434,25 +521,113 @@ func (p *ConnectionPool) waitForConnection(clientID string) (*PooledConnection, 
 	}
 }
 
+// updatePoolMetrics updates pool-related metrics
+func (p *ConnectionPool) updatePoolMetrics() {
+	if p.metrics == nil {
+		return
+	}
+
+	p.mutex.RLock()
+	inUseCount := len(p.inUse)
+	p.mutex.RUnlock()
+
+	// Calculate utilization ratio
+	utilization := float64(inUseCount) / float64(p.maxSize)
+	if p.maxSize == 0 {
+		utilization = 0
+	}
+
+	tags := []string{fmt.Sprintf("database:%s", p.name)}
+	_ = p.metrics.Gauge("pool_utilization", utilization, tags, 1)
+}
+
 // maintainPool maintains the connection pool
 func (p *ConnectionPool) maintainPool() {
-	ticker := time.NewTicker(30 * time.Second)
+	ticker := time.NewTicker(1 * time.Second)
 	defer ticker.Stop()
 
 	for range ticker.C {
 		p.cleanupIdleConnections()
 		p.ensureMinimumConnections()
+		p.updatePoolMetrics()
 	}
 }
 
 // cleanupIdleConnections removes idle connections
 func (p *ConnectionPool) cleanupIdleConnections() {
-	// TODO: Implement idle connection cleanup
+	p.mutex.Lock()
+	defer p.mutex.Unlock()
+
+	now := time.Now()
+	idleTimeout := 5 * time.Minute
+
+	// Check available connections
+	available := make(chan *PooledConnection, cap(p.available))
+	for {
+		select {
+		case conn := <-p.available:
+			if conn == nil {
+				continue
+			}
+			if now.Sub(conn.LastUsed) > idleTimeout {
+				// Remove idle connection
+				p.closeConnection(conn)
+				continue
+			}
+			available <- conn
+		default:
+			goto doneAvailable
+		}
+	}
+doneAvailable:
+	close(available)
+
+	// Rebuild available channel
+	p.available = make(chan *PooledConnection, p.maxSize)
+	for conn := range available {
+		select {
+		case p.available <- conn:
+		default:
+			// Pool is full, discard connection
+			p.closeConnection(conn)
+		}
+	}
 }
 
 // ensureMinimumConnections ensures minimum connections are available
 func (p *ConnectionPool) ensureMinimumConnections() {
-	// TODO: Implement minimum connection maintenance
+	p.mutex.RLock()
+	available := len(p.available)
+	inUse := len(p.inUse)
+	total := available + inUse
+	p.mutex.RUnlock()
+
+	// Create connections if we have capacity and waiters
+	if total < p.maxSize && len(p.waitQueue) > 0 {
+		conn := p.createConnection()
+		p.mutex.Lock()
+		p.available <- conn
+		p.mutex.Unlock()
+
+		// Notify a waiter
+		select {
+		case waiter := <-p.waitQueue:
+			select {
+			case waiter <- conn:
+			default:
+				// Waiter is no longer waiting, return connection to pool
+				p.mutex.Lock()
+				select {
+				case p.available <- conn:
+				default:
+					// Pool is full, discard connection
+				}
+				p.mutex.Unlock()
+			}
+		default:
+			// No waiters, connection stays in available pool
+		}
+	}
 }
 
 // GetStats returns pool statistics
@@ -474,9 +649,16 @@ func (p *ConnectionPool) GetStats() map[string]interface{} {
 }
 
 // Stats helper methods
+
 func (s *PoolStats) incrementTotal() {
 	s.mutex.Lock()
 	s.TotalConnections++
+	s.mutex.Unlock()
+}
+
+func (s *PoolStats) decrementTotal() {
+	s.mutex.Lock()
+	s.TotalConnections--
 	s.mutex.Unlock()
 }
 
@@ -516,4 +698,9 @@ func (s *PoolStats) avgWaitTime() time.Duration {
 		return 0
 	}
 	return s.TotalWaitTime / time.Duration(s.TotalRequests)
+}
+
+// GetDefaultPoolSizes returns the default min and max pool sizes
+func (m *Manager) GetDefaultPoolSizes() (int, int) {
+	return m.minPoolSize, m.maxPoolSize
 }

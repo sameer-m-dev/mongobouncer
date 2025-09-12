@@ -10,6 +10,7 @@ import (
 	"github.com/sameer-m-dev/mongobouncer/auth"
 	"github.com/sameer-m-dev/mongobouncer/pool"
 	"github.com/sameer-m-dev/mongobouncer/proxy"
+	"github.com/sameer-m-dev/mongobouncer/util"
 )
 
 // Benchmark tests for performance testing
@@ -122,9 +123,10 @@ func BenchmarkAuthentication(b *testing.B) {
 
 func BenchmarkConnectionPool(b *testing.B) {
 	logger := zap.NewNop()
+	metrics, _ := util.NewMetricsClient(logger, "localhost:9090")
 
 	b.Run("SessionMode", func(b *testing.B) {
-		m := pool.NewManager(logger, "session", 100, 10, 1000)
+		m := pool.NewManager(logger, metrics, "session", 10, 100, 10, 1000)
 		p := m.GetPool("bench", nil, pool.SessionMode, 100)
 
 		b.ResetTimer()
@@ -141,7 +143,7 @@ func BenchmarkConnectionPool(b *testing.B) {
 	})
 
 	b.Run("StatementMode", func(b *testing.B) {
-		m := pool.NewManager(logger, "statement", 100, 10, 1000)
+		m := pool.NewManager(logger, metrics, "statement", 10, 100, 10, 1000)
 		p := m.GetPool("bench", nil, pool.StatementMode, 100)
 
 		b.ResetTimer()
@@ -158,7 +160,7 @@ func BenchmarkConnectionPool(b *testing.B) {
 	})
 
 	b.Run("HighContention", func(b *testing.B) {
-		m := pool.NewManager(logger, "statement", 10, 2, 1000) // Small pool
+		m := pool.NewManager(logger, metrics, "statement", 2, 10, 2, 1000) // Small pool
 		p := m.GetPool("bench", nil, pool.StatementMode, 10)
 
 		b.ResetTimer()
@@ -210,11 +212,12 @@ pool_mode = "session"
 
 func BenchmarkConcurrentOperations(b *testing.B) {
 	logger := zap.NewNop()
+	metrics, _ := util.NewMetricsClient(logger, "localhost:9090")
 
 	b.Run("MixedWorkload", func(b *testing.B) {
 		// Set up components
 		authM, _ := auth.NewManager(logger, "trust", "", "", nil, nil)
-		poolM := pool.NewManager(logger, "session", 50, 5, 500)
+		poolM := pool.NewManager(logger, metrics, "session", 5, 50, 5, 500)
 		router := proxy.NewDatabaseRouter(logger)
 
 		// Set up routes
@@ -251,6 +254,7 @@ func BenchmarkConcurrentOperations(b *testing.B) {
 // Memory allocation benchmarks
 func BenchmarkMemoryAllocations(b *testing.B) {
 	logger := zap.NewNop()
+	metrics, _ := util.NewMetricsClient(logger, "localhost:9090")
 
 	b.Run("RouterCreation", func(b *testing.B) {
 		b.ReportAllocs()
@@ -265,13 +269,13 @@ func BenchmarkMemoryAllocations(b *testing.B) {
 		b.ReportAllocs()
 		b.ResetTimer()
 		for i := 0; i < b.N; i++ {
-			m := pool.NewManager(logger, "session", 10, 2, 100)
+			m := pool.NewManager(logger, metrics, "session", 2, 10, 2, 100)
 			_ = m.GetPool("test", nil, pool.SessionMode, 10)
 		}
 	})
 
 	b.Run("ClientRegistration", func(b *testing.B) {
-		m := pool.NewManager(logger, "session", 10, 2, 10000)
+		m := pool.NewManager(logger, metrics, "session", 2, 10, 2, 10000)
 		b.ReportAllocs()
 		b.ResetTimer()
 		for i := 0; i < b.N; i++ {
@@ -287,12 +291,13 @@ func BenchmarkMemoryAllocations(b *testing.B) {
 // Stress test benchmark
 func BenchmarkStressTest(b *testing.B) {
 	logger := zap.NewNop()
+	metrics, _ := util.NewMetricsClient(logger, "localhost:9090")
 
 	b.Run("FullSystemStress", func(b *testing.B) {
 		// Create all components
 		authM, _ := auth.NewManager(logger, "trust", "", "",
 			[]string{"admin"}, []string{"stats"})
-		poolM := pool.NewManager(logger, "statement", 200, 20, 2000)
+		poolM := pool.NewManager(logger, metrics, "statement", 20, 200, 20, 2000)
 		router := proxy.NewDatabaseRouter(logger)
 
 		// Set up 50 databases

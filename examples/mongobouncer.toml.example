@@ -45,15 +45,16 @@ stats_users = ["stats", "monitor"]
 # Connection Pooling & Performance
 # =====================================
 pool_mode = "session"  # session, transaction, statement
-default_pool_size = 20  # Default connections per database
+min_pool_size = 5      # Minimum connections per database
+max_pool_size = 20     # Maximum connections per database
 reserve_pool_size = 5  # Reserved connections for emergencies
-max_client_conn = 100  # Maximum client connections
+max_client_conn = 100  # Maximum client connections (0 = unlimited)
 max_db_connections = 0  # 0 = unlimited database connections
 max_user_connections = 0  # 0 = unlimited per user
 
 # Pool management
-pool_size = 20  # Alias for default_pool_size
-min_pool_size = 5  # Minimum pool size
+# pool_size = 20  # Legacy alias for max_pool_size (deprecated)
+# min_pool_size = 5  # Minimum pool size (now configured above)
 server_reset_query = ""  # Query to reset server state
 server_reset_query_always = false  # Always run reset query
 
@@ -104,24 +105,6 @@ enable_retryable_reads = true  # Enable retryable reads
 
 # Connection string options (applied to all connections unless overridden)
 default_connection_options = "maxPoolSize=50&minPoolSize=5&maxIdleTimeMS=300000&socketTimeoutMS=5000&connectTimeoutMS=10000"
-
-# =====================================
-# Dynamic Configuration
-# =====================================
-[mongobouncer.dynamic]
-enabled = true  # Enable dynamic configuration updates
-config_reload_interval = 60  # Automatic config reload interval (seconds)
-config_file_watch = true  # Watch config file for changes
-reload_on_sighup = true  # Reload config on SIGHUP signal
-
-# HTTP management interface
-management_port = 8080  # Port for management HTTP interface
-management_address = "127.0.0.1"  # Address for management interface
-management_enabled = false  # Enable HTTP management interface
-
-# Commands that can disable writes dynamically
-disable_writes = false  # Dynamically disable write operations
-read_only_mode = false  # Force read-only mode
 
 # =====================================
 # Metrics & Monitoring (Prometheus)
@@ -263,8 +246,68 @@ ssl_key_file = "/etc/ssl/private/mongodb-client-key.pem"
 ssl_verify = true
 label = "secure"
 
-# Wildcard database - fallback for any database not explicitly configured
-[databases."*"]
+# Wildcard Database Support
+# Wildcard databases allow dynamic routing based on database name patterns
+# Precedence: exact match → wildcard match → error
+# 
+# Example 8: Exact match - specific database
+[databases.myapp_prod]
+host = "prod-cluster.mongodb.net"
+port = 27017
+dbname = "myapp_prod"
+user = "prod_user"
+password = "${PROD_PASSWORD}"
+pool_mode = "session"
+pool_size = 50
+label = "prod-exact"
+
+# Example 9: Wildcard patterns - match multiple databases
+# Prefix wildcard: matches databases starting with "analytics_"
+[databases.analytics_*]
+host = "analytics-cluster.mongodb.net"
+port = 27017
+dbname = "analytics"  # Base database name
+user = "analytics_user"
+password = "${ANALYTICS_PASSWORD}"
+pool_mode = "statement"
+pool_size = 30
+label = "analytics-wildcard"
+
+# Suffix wildcard: matches databases ending with "_test"
+[databases.*_test]
+host = "test-cluster.mongodb.net"
+port = 27017
+dbname = "test"
+user = "test_user"
+password = "${TEST_PASSWORD}"
+pool_mode = "session"
+pool_size = 20
+label = "test-wildcard"
+
+# Contains wildcard: matches databases containing "staging"
+[databases.*staging*]
+host = "staging-cluster.mongodb.net"
+port = 27017
+dbname = "staging"
+user = "staging_user"
+password = "${STAGING_PASSWORD}"
+pool_mode = "session"
+pool_size = 15
+label = "staging-wildcard"
+
+# Complex wildcard: matches patterns like "analytics_tenant_v2"
+[databases.analytics_*_v2]
+host = "analytics-v2-cluster.mongodb.net"
+port = 27017
+dbname = "analytics_v2"
+user = "analytics_v2_user"
+password = "${ANALYTICS_V2_PASSWORD}"
+pool_mode = "transaction"
+pool_size = 25
+label = "analytics-v2"
+
+# Catch-all wildcard: matches any database not matched above
+[databases.*]
 host = "${DEFAULT_MONGO_HOST:-localhost}"
 port = 27017
 dbname = "*"  # Use database name from client connection

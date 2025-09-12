@@ -9,6 +9,7 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/sameer-m-dev/mongobouncer/pool"
 	"github.com/sameer-m-dev/mongobouncer/util"
 	"go.uber.org/zap"
 
@@ -27,14 +28,15 @@ type Proxy struct {
 	address string
 	unlink  bool
 
-	mongoLookup MongoLookup
-	dynamic     *Dynamic
+	mongoLookup    MongoLookup
+	poolManager    *pool.Manager
+	databaseRouter *DatabaseRouter
 
 	quit chan interface{}
 	kill chan interface{}
 }
 
-func NewProxy(log *zap.Logger, metrics *util.MetricsClient, label, network, address string, unlink bool, mongoLookup MongoLookup, dynamic *Dynamic) (*Proxy, error) {
+func NewProxy(log *zap.Logger, metrics *util.MetricsClient, label, network, address string, unlink bool, mongoLookup MongoLookup, poolManager *pool.Manager, databaseRouter *DatabaseRouter) (*Proxy, error) {
 	if label != "" {
 		log = log.With(zap.String("cluster", label))
 	}
@@ -46,8 +48,9 @@ func NewProxy(log *zap.Logger, metrics *util.MetricsClient, label, network, addr
 		address: address,
 		unlink:  unlink,
 
-		mongoLookup: mongoLookup,
-		dynamic:     dynamic,
+		mongoLookup:    mongoLookup,
+		poolManager:    poolManager,
+		databaseRouter: databaseRouter,
 
 		quit: make(chan interface{}),
 		kill: make(chan interface{}),
@@ -162,7 +165,7 @@ func (p *Proxy) accept(l net.Listener) {
 		opened("connection_opened", []string{})
 		go func() {
 			log.Info("Accept")
-			handleConnection(log, p.metrics, p.address, c, p.mongoLookup, p.dynamic, p.kill)
+			handleConnection(log, p.metrics, p.address, c, p.mongoLookup, p.poolManager, p.kill, p.databaseRouter)
 
 			_ = c.Close()
 			log.Info("Close")

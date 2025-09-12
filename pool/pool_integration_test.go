@@ -9,16 +9,19 @@ import (
 	"time"
 
 	"github.com/stretchr/testify/assert"
+	"go.mongodb.org/mongo-driver/mongo/options"
 	"go.uber.org/zap"
 
 	mongobouncer "github.com/sameer-m-dev/mongobouncer/mongo"
+	"github.com/sameer-m-dev/mongobouncer/util"
 )
 
 func TestPoolManagerIntegration(t *testing.T) {
 	logger := zap.NewNop()
+	metrics, _ := util.NewMetricsClient(logger, "localhost:9090")
 
 	t.Run("CompletePoolingWorkflow", func(t *testing.T) {
-		m := NewManager(logger, "session", 10, 2, 50)
+		m := NewManager(logger, metrics, "session", 2, 10, 2, 50)
 
 		// Register multiple clients with different pool modes
 		clients := []struct {
@@ -66,10 +69,13 @@ func TestPoolManagerIntegration(t *testing.T) {
 	})
 
 	t.Run("SessionPoolingMode", func(t *testing.T) {
-		m := NewManager(logger, "session", 5, 1, 10)
+		m := NewManager(logger, metrics, "session", 1, 5, 1, 10)
 
-		// Create mock MongoDB client
+		// Create mock MongoDB client with proper options
 		mongoClient := &mongobouncer.Mongo{} // Mock
+		// Initialize client options to avoid nil pointer dereference
+		opts := options.Client().ApplyURI("mongodb://localhost:27017/sessiondb")
+		mongoClient.SetClientOptions(opts)
 		pool := m.GetPool("sessiondb", mongoClient, SessionMode, 5)
 
 		// Register session client
@@ -98,9 +104,11 @@ func TestPoolManagerIntegration(t *testing.T) {
 	})
 
 	t.Run("TransactionPoolingMode", func(t *testing.T) {
-		m := NewManager(logger, "transaction", 5, 1, 10)
+		m := NewManager(logger, metrics, "transaction", 1, 5, 1, 10)
 
 		mongoClient := &mongobouncer.Mongo{} // Mock
+		opts := options.Client().ApplyURI("mongodb://localhost:27017/txndb")
+		mongoClient.SetClientOptions(opts)
 		pool := m.GetPool("txndb", mongoClient, TransactionMode, 5)
 
 		// Register transaction client
@@ -135,9 +143,11 @@ func TestPoolManagerIntegration(t *testing.T) {
 	})
 
 	t.Run("StatementPoolingMode", func(t *testing.T) {
-		m := NewManager(logger, "statement", 5, 1, 10)
+		m := NewManager(logger, metrics, "statement", 1, 5, 1, 10)
 
 		mongoClient := &mongobouncer.Mongo{} // Mock
+		opts := options.Client().ApplyURI("mongodb://localhost:27017/stmtdb")
+		mongoClient.SetClientOptions(opts)
 		pool := m.GetPool("stmtdb", mongoClient, StatementMode, 5)
 
 		// Register statement client
@@ -163,9 +173,11 @@ func TestPoolManagerIntegration(t *testing.T) {
 	})
 
 	t.Run("PoolExhaustion", func(t *testing.T) {
-		m := NewManager(logger, "session", 2, 0, 10) // Small pool
+		m := NewManager(logger, metrics, "session", 0, 2, 0, 10) // Small pool
 
 		mongoClient := &mongobouncer.Mongo{} // Mock
+		opts := options.Client().ApplyURI("mongodb://localhost:27017/small")
+		mongoClient.SetClientOptions(opts)
 		pool := m.GetPool("small", mongoClient, SessionMode, 2)
 
 		// Checkout all connections
@@ -208,14 +220,17 @@ func TestPoolManagerIntegration(t *testing.T) {
 	})
 
 	t.Run("MultipleDatabasePools", func(t *testing.T) {
-		m := NewManager(logger, "session", 10, 2, 50)
+		m := NewManager(logger, metrics, "session", 2, 10, 2, 50)
 
 		// Create pools for different databases
 		databases := []string{"users", "orders", "analytics", "logs"}
 		pools := make(map[string]*ConnectionPool)
 
 		for _, db := range databases {
-			pool := m.GetPool(db, nil, SessionMode, 10)
+			mongoClient := &mongobouncer.Mongo{} // Mock
+			opts := options.Client().ApplyURI(fmt.Sprintf("mongodb://localhost:27017/%s", db))
+			mongoClient.SetClientOptions(opts)
+			pool := m.GetPool(db, mongoClient, SessionMode, 10)
 			pools[db] = pool
 			assert.Equal(t, db, pool.name)
 		}
@@ -237,14 +252,19 @@ func TestPoolManagerIntegration(t *testing.T) {
 		}
 
 		// Get same pool instance
-		samePool := m.GetPool("users", nil, SessionMode, 20)
+		mongoClient := &mongobouncer.Mongo{} // Mock
+		opts := options.Client().ApplyURI("mongodb://localhost:27017/users")
+		mongoClient.SetClientOptions(opts)
+		samePool := m.GetPool("users", mongoClient, SessionMode, 20)
 		assert.Equal(t, pools["users"], samePool)
 	})
 
 	t.Run("ConnectionLifecycle", func(t *testing.T) {
-		m := NewManager(logger, "session", 5, 1, 10)
+		m := NewManager(logger, metrics, "session", 1, 5, 1, 10)
 
 		mongoClient := &mongobouncer.Mongo{} // Mock
+		opts := options.Client().ApplyURI("mongodb://localhost:27017/lifecycle")
+		mongoClient.SetClientOptions(opts)
 		pool := m.GetPool("lifecycle", mongoClient, SessionMode, 5)
 
 		// Track connection lifecycle
@@ -280,10 +300,12 @@ func TestPoolManagerIntegration(t *testing.T) {
 	})
 
 	t.Run("PoolStatistics", func(t *testing.T) {
-		m := NewManager(logger, "session", 10, 2, 20)
+		m := NewManager(logger, metrics, "session", 2, 10, 2, 20)
 
 		mongoClient := &mongobouncer.Mongo{} // Mock
-		pool := m.GetPool("stats", mongoClient, SessionMode, 10)
+		opts := options.Client().ApplyURI("mongodb://localhost:27017/stats")
+		mongoClient.SetClientOptions(opts)
+		pool := m.GetPool("stats", mongoClient, SessionMode, 5)
 
 		// Initial stats
 		stats := pool.GetStats()
@@ -340,9 +362,11 @@ func TestPoolManagerIntegration(t *testing.T) {
 	})
 
 	t.Run("ConcurrentPoolOperations", func(t *testing.T) {
-		m := NewManager(logger, "session", 20, 5, 100)
+		m := NewManager(logger, metrics, "session", 5, 20, 5, 100)
 
 		mongoClient := &mongobouncer.Mongo{} // Mock
+		opts := options.Client().ApplyURI("mongodb://localhost:27017/concurrent")
+		mongoClient.SetClientOptions(opts)
 		pool := m.GetPool("concurrent", mongoClient, SessionMode, 20)
 
 		var wg sync.WaitGroup
@@ -425,7 +449,7 @@ func TestPoolManagerIntegration(t *testing.T) {
 		}
 
 		for _, tt := range tests {
-			m := NewManager(logger, tt.configMode, 10, 2, 50)
+			m := NewManager(logger, metrics, tt.configMode, 2, 10, 2, 50)
 
 			// Get pool with specific mode
 			pool := m.GetPool("testdb", nil, tt.dbMode, 10)
@@ -438,9 +462,11 @@ func TestPoolManagerIntegration(t *testing.T) {
 	})
 
 	t.Run("ConnectionTimeout", func(t *testing.T) {
-		m := NewManager(logger, "session", 1, 0, 10) // Pool of 1
+		m := NewManager(logger, metrics, "session", 0, 1, 0, 10) // Pool of 1
 
 		mongoClient := &mongobouncer.Mongo{} // Mock
+		opts := options.Client().ApplyURI("mongodb://localhost:27017/timeout")
+		mongoClient.SetClientOptions(opts)
 		pool := m.GetPool("timeout", mongoClient, SessionMode, 1)
 
 		// Checkout the only connection

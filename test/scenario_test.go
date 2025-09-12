@@ -16,11 +16,13 @@ import (
 	"github.com/sameer-m-dev/mongobouncer/auth"
 	"github.com/sameer-m-dev/mongobouncer/pool"
 	"github.com/sameer-m-dev/mongobouncer/proxy"
+	"github.com/sameer-m-dev/mongobouncer/util"
 )
 
 // Real-world scenario tests
 func TestRealWorldScenarios(t *testing.T) {
 	logger := zap.NewNop()
+	metrics, _ := util.NewMetricsClient(logger, "localhost:9090")
 
 	t.Run("MicroservicesArchitecture", func(t *testing.T) {
 		// Simulate microservices each with their own database
@@ -62,7 +64,7 @@ func TestRealWorldScenarios(t *testing.T) {
 			[]string{"monitoring", "analytics_reader"})
 
 		// Set up pool manager
-		poolManager := pool.NewManager(logger, "session", 20, 5, 200)
+		poolManager := pool.NewManager(logger, metrics, "session", 5, 20, 5, 200)
 
 		// Set up router
 		router := proxy.NewDatabaseRouter(logger)
@@ -257,7 +259,7 @@ func TestRealWorldScenarios(t *testing.T) {
 	t.Run("MultiTenantSaaS", func(t *testing.T) {
 		// Simulate multi-tenant SaaS with database per tenant
 		router := proxy.NewDatabaseRouter(logger)
-		poolManager := pool.NewManager(logger, "transaction", 10, 2, 1000)
+		poolManager := pool.NewManager(logger, metrics, "transaction", 2, 10, 2, 1000)
 
 		// Configure tenants
 		tenants := []struct {
