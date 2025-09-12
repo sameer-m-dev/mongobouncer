@@ -1,0 +1,35 @@
+# Minimal MongoBouncer Configuration for Testing
+# This is the absolute minimum configuration needed to run MongoBouncer
+
+[mongobouncer]
+listen_addr = "0.0.0.0"
+listen_port = 27017
+log_level = "info"
+
+# Connection management
+pool_mode = "transaction"
+default_pool_size = 10
+max_client_conn = 50
+
+# Prometheus metrics (optional but recommended)
+[mongobouncer.metrics]
+address = "0.0.0.0:9090"
+enabled = true
+
+# Database connections - Configure these for your MongoDB setup
+[databases]
+# Simple local MongoDB connection
+mongobouncer = "mongodb://localhost:27018/mongobouncer"
+
+# Alternative: More explicit configuration
+# [databases.test_db]
+# host = "localhost"
+# port = 27017
+# database = "test"
+# max_connections = 20
+
+# Optional: Basic user authentication
+# [users]
+# [users.test_user]
+# password = "test_password"
+# max_user_connections = 10

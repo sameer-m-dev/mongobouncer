@@ -1,0 +1,56 @@
+# Command: docker-compose -f ./tools/docker-compose.yaml up
+version: "3.8"
+
+services:
+  prometheus:
+    image: prom/prometheus:v3.5.0
+    volumes:
+      - ./config/prometheus/:/etc/prometheus/
+      - .docker-compose-data/prometheus:/prometheus
+    command:
+      - "--config.file=/etc/prometheus/config.yaml"
+      - "--storage.tsdb.path=/prometheus"
+      # - '--web.console.libraries=/usr/share/prometheus/console_libraries'
+      # - '--web.console.templates=/usr/share/prometheus/consoles'
+    ports:
+      - 8010:9090
+    networks:
+      - mongobouncernet
+    restart: always
+  grafana:
+    image: grafana/grafana:12.1
+    env_file:
+      - ./config/grafana/grafana.conf
+    volumes:
+      - .docker-compose-data/grafana:/var/lib/grafana
+      - ./config/grafana/provisioning/:/etc/grafana/provisioning/
+    ports:
+      - 8011:3000
+    networks:
+      - mongobouncernet
+    depends_on:
+      - prometheus
+    restart: always
+  mongo6-1:
+    image: "mongo:6.0"
+    ports:
+      - "27018:27017"
+    networks:
+      - mongobouncernet
+  mongo6-2:
+    image: "mongo:6.0"
+    ports:
+      - "27019:27017"
+    networks:
+      - mongobouncernet
+  mongo6-3:
+    image: "mongo:6.0"
+    ports:
+      - "27020:27017"
+    networks:
+      - mongobouncernet
+
+networks:
+  mongobouncernet:
+    name: mongobouncernet
+    driver: bridge

@@ -1,0 +1,51 @@
+{{- if .Values.tests.enabled }}
+apiVersion: v1
+kind: Pod
+metadata:
+  name: "{{ include "mongobouncer.fullname" . }}-test-connection"
+  labels:
+    {{- include "mongobouncer.labels" . | nindent 4 }}
+  annotations:
+    "helm.sh/hook": test
+    "helm.sh/hook-weight": "1"
+    "helm.sh/hook-delete-policy": before-hook-creation,hook-succeeded
+spec:
+  restartPolicy: Never
+  containers:
+    - name: mongodb-client-test
+      image: mongo:7
+      command:
+        - /bin/bash
+        - -c
+        - |
+          set -e
+          echo "Testing MongoBouncer connection..."
+          
+          # Test MongoDB protocol connection through the proxy
+          mongo --host {{ include "mongobouncer.fullname" . }}.{{ .Release.Namespace }}.svc.cluster.local:{{ .Values.service.port }} --eval "db.runCommand('ping')"
+          
+          echo "✓ MongoDB connection through MongoBouncer successful"
+          
+          {{- if .Values.monitoring.healthCheck.enabled }}
+          # Test health check endpoint
+          echo "Testing health check endpoint..."
+          curl -f http://{{ include "mongobouncer.fullname" . }}.{{ .Release.Namespace }}.svc.cluster.local:{{ .Values.monitoring.healthCheck.port }}{{ .Values.monitoring.healthCheck.path }}
+          echo "✓ Health check endpoint successful"
+          {{- end }}
+          
+          {{- if .Values.monitoring.prometheus.enabled }}
+          # Test metrics endpoint
+          echo "Testing Prometheus metrics endpoint..."
+          curl -f http://{{ include "mongobouncer.fullname" . }}.{{ .Release.Namespace }}.svc.cluster.local:{{ .Values.monitoring.prometheus.port }}{{ .Values.monitoring.prometheus.path }} | grep -q "mongobouncer"
+          echo "✓ Prometheus metrics endpoint successful"
+          {{- end }}
+          
+          echo "All tests passed!"
+      resources:
+        limits:
+          cpu: 100m
+          memory: 128Mi
+        requests:
+          cpu: 50m
+          memory: 64Mi
+{{- end }}

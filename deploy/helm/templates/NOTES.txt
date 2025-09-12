@@ -1,0 +1,80 @@
+1. Get the MongoBouncer connection details:
+
+{{- if eq .Values.service.type "NodePort" }}
+  export NODE_PORT=$(kubectl get --namespace {{ .Release.Namespace }} -o jsonpath="{.spec.ports[0].nodePort}" services {{ include "mongobouncer.fullname" . }})
+  export NODE_IP=$(kubectl get nodes --namespace {{ .Release.Namespace }} -o jsonpath="{.items[0].status.addresses[0].address}")
+  echo "MongoDB Connection: $NODE_IP:$NODE_PORT"
+
+{{- else if eq .Values.service.type "LoadBalancer" }}
+     NOTE: It may take a few minutes for the LoadBalancer IP to be available.
+           You can watch the status of by running 'kubectl get --namespace {{ .Release.Namespace }} svc -w {{ include "mongobouncer.fullname" . }}'
+  export SERVICE_IP=$(kubectl get svc --namespace {{ .Release.Namespace }} {{ include "mongobouncer.fullname" . }} --template "{{"{{ range (index .status.loadBalancer.ingress 0) }}{{.}}{{ end }}"}}")
+  echo "MongoDB Connection: $SERVICE_IP:{{ .Values.service.port }}"
+
+{{- else if eq .Values.service.type "ClusterIP" }}
+  export POD_NAME=$(kubectl get pods --namespace {{ .Release.Namespace }} -l "{{ include "mongobouncer.selectorLabels" . }}" -o jsonpath="{.items[0].metadata.name}")
+  export CONTAINER_PORT=$(kubectl get pod --namespace {{ .Release.Namespace }} $POD_NAME -o jsonpath="{.spec.containers[0].ports[0].containerPort}")
+  echo "Visit http://127.0.0.1:{{ .Values.service.port }} to connect to MongoBouncer"
+  kubectl --namespace {{ .Release.Namespace }} port-forward $POD_NAME {{ .Values.service.port }}:$CONTAINER_PORT
+
+Internal connection string:
+  mongodb://{{ include "mongobouncer.fullname" . }}.{{ .Release.Namespace }}.svc.cluster.local:{{ .Values.service.port }}/
+
+{{- end }}
+
+2. Test the connection:
+{{- if .Values.tests.enabled }}
+  helm test {{ .Release.Name }} --namespace {{ .Release.Namespace }}
+{{- else }}
+  kubectl run mongodb-client --rm --tty -i --restart='Never' --namespace {{ .Release.Namespace }} --image mongo:7 -- mongo --host {{ include "mongobouncer.fullname" . }}.{{ .Release.Namespace }}.svc.cluster.local:{{ .Values.service.port }} --eval "db.runCommand('ping')"
+{{- end }}
+
+3. Monitor MongoBouncer:
+{{- if .Values.monitoring.prometheus.enabled }}
+
+Prometheus Metrics:
+{{- if eq .Values.service.type "ClusterIP" }}
+  kubectl --namespace {{ .Release.Namespace }} port-forward svc/{{ include "mongobouncer.fullname" . }} {{ .Values.monitoring.prometheus.port }}:{{ .Values.monitoring.prometheus.port }}
+  curl http://localhost:{{ .Values.monitoring.prometheus.port }}{{ .Values.monitoring.prometheus.path }}
+{{- else }}
+  curl http://$SERVICE_IP:{{ .Values.monitoring.prometheus.port }}{{ .Values.monitoring.prometheus.path }}
+{{- end }}
+{{- end }}
+
+{{- if .Values.monitoring.healthCheck.enabled }}
+
+Health Check:
+{{- if eq .Values.service.type "ClusterIP" }}
+  kubectl --namespace {{ .Release.Namespace }} port-forward svc/{{ include "mongobouncer.fullname" . }} {{ .Values.monitoring.healthCheck.port }}:{{ .Values.monitoring.healthCheck.port }}
+  curl http://localhost:{{ .Values.monitoring.healthCheck.port }}{{ .Values.monitoring.healthCheck.path }}
+{{- else }}
+  curl http://$SERVICE_IP:{{ .Values.monitoring.healthCheck.port }}{{ .Values.monitoring.healthCheck.path }}
+{{- end }}
+{{- end }}
+
+4. View logs:
+  kubectl logs --namespace {{ .Release.Namespace }} -l "{{ include "mongobouncer.selectorLabels" . }}" -f
+
+{{- if .Values.app.config.dynamic.managementEnabled }}
+
+5. Dynamic Configuration Management:
+{{- if eq .Values.service.type "ClusterIP" }}
+  kubectl --namespace {{ .Release.Namespace }} port-forward svc/{{ include "mongobouncer.fullname" . }} {{ .Values.app.config.dynamic.managementPort }}:{{ .Values.app.config.dynamic.managementPort }}
+  # Access management API at http://localhost:{{ .Values.app.config.dynamic.managementPort }}
+{{- else }}
+  # Access management API at http://$SERVICE_IP:{{ .Values.app.config.dynamic.managementPort }}
+{{- end }}
+{{- end }}
+
+{{- if not (or .Values.app.databases .Values.app.users) }}
+
+⚠️  WARNING: No databases or users configured! 
+   Please update your values.yaml to configure:
+   - app.databases: MongoDB connection strings and settings
+   - app.users: Authentication credentials and permissions
+   
+   Then upgrade the release:
+   helm upgrade {{ .Release.Name }} {{ .Chart.Name }} --namespace {{ .Release.Namespace }} -f your-values.yaml
+{{- end }}
+
+For more information visit: https://github.com/sameer-m-dev/mongobouncer

@@ -1,0 +1,65 @@
+{{- if .Values.networkPolicy.enabled }}
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: {{ include "mongobouncer.fullname" . }}
+  labels:
+    {{- include "mongobouncer.labels" . | nindent 4 }}
+spec:
+  podSelector:
+    matchLabels:
+      {{- include "mongobouncer.selectorLabels" . | nindent 6 }}
+  policyTypes:
+    - Ingress
+    - Egress
+  ingress:
+    # Allow MongoDB connections on port 27017
+    - from: []
+      ports:
+        - protocol: TCP
+          port: {{ .Values.app.config.listenPort }}
+    {{- if .Values.monitoring.prometheus.enabled }}
+    # Allow metrics scraping
+    - from: []
+      ports:
+        - protocol: TCP
+          port: {{ .Values.monitoring.prometheus.port }}
+    {{- end }}
+    {{- if .Values.monitoring.healthCheck.enabled }}
+    # Allow health checks
+    - from: []
+      ports:
+        - protocol: TCP
+          port: {{ .Values.monitoring.healthCheck.port }}
+    {{- end }}
+    {{- if .Values.app.config.dynamic.managementEnabled }}
+    # Allow management API
+    - from: []
+      ports:
+        - protocol: TCP
+          port: {{ .Values.app.config.dynamic.managementPort }}
+    {{- end }}
+    {{- with .Values.networkPolicy.ingress }}
+    {{- toYaml . | nindent 4 }}
+    {{- end }}
+  egress:
+    # Allow DNS resolution
+    - to: []
+      ports:
+        - protocol: UDP
+          port: 53
+        - protocol: TCP
+          port: 53
+    # Allow outbound MongoDB connections (typically to MongoDB clusters)
+    - to: []
+      ports:
+        - protocol: TCP
+          port: 27017
+        - protocol: TCP
+          port: 27018
+        - protocol: TCP
+          port: 27019
+    {{- with .Values.networkPolicy.egress }}
+    {{- toYaml . | nindent 4 }}
+    {{- end }}
+{{- end }}

@@ -1,0 +1,15 @@
+# mongobouncer users file
+# Format: "username" "password_hash" "extra_info"
+# 
+# Password hash formats:
+# - md5: md5 hash of password+username
+# - scram-sha-256: SCRAM-SHA-256 hash
+# - plain: plain text (only for development/testing)
+#
+# Extra info can contain pool_mode and connection limits
+
+"app_user" "md51234567890abcdef1234567890abcdef" "pool_mode=transaction max_connections=50"
+"analytics_user" "scram-sha-256$4096:salt$storedKey:serverKey" "pool_mode=session"
+"readonly_user" "md5abcdef1234567890abcdef1234567890" "pool_mode=statement max_connections=100"
+"admin" "md5adminpasswordhash" "max_connections=10"
+"monitor" "md5monitorpasswordhash" "stats_only=true"

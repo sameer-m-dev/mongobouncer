@@ -1,0 +1,311 @@
+# Default values for mongobouncer
+# This is a YAML-formatted file.
+
+# Global configuration
+global:
+  # Image registry for all images
+  imageRegistry: ""
+
+# Image configuration
+image:
+  registry: ghcr.io
+  repository: sameer-m-dev/mongobouncer
+  tag: "latest"
+  pullPolicy: IfNotPresent
+  # Optionally specify an array of imagePullSecrets
+  pullSecrets: []
+
+# Application configuration
+app:
+  # MongoBouncer configuration
+  config:
+    # Server settings
+    listenAddr: "0.0.0.0"
+    listenPort: 27017
+    logLevel: "info"
+    verbose: false
+
+    # Connection management
+    poolMode: "session" # session, statement, transaction
+    defaultPoolSize: 20
+    maxClientConn: 100
+    minPoolSize: 5
+
+    # TLS configuration
+    tls:
+      enabled: false
+      certFile: "/etc/tls/tls.crt"
+      keyFile: "/etc/tls/tls.key"
+      caFile: "/etc/tls/ca.crt"
+      verifyClient: false
+
+    # MongoDB-specific settings
+    mongodb:
+      defaultReadPreference: "primary"
+      defaultWriteConcern: "majority"
+      defaultReadConcern: "local"
+      maxBsonObjectSize: 16777216
+      enableRetryableWrites: true
+      enableRetryableReads: true
+
+    # Dynamic configuration
+    dynamic:
+      enabled: true
+      configReloadInterval: "30s"
+      managementPort: 8080
+      managementEnabled: true
+      readOnlyMode: false
+
+    # Performance tuning
+    performance:
+      tcpKeepalive: true
+      tcpKeepaliveIdle: 600
+      tcpKeepaliveInterval: 30
+      tcpKeepaliveCount: 3
+      listenBacklog: 128
+      maxPacketSize: 16777216
+
+  # Database connections - these should be configured per environment
+  databases:
+    {}
+    # Example:
+    # app_db:
+    #   connectionString: "mongodb://mongo-cluster:27017/app"
+    #   maxConnections: 50
+    #   poolMode: "session"
+    # analytics:
+    #   connectionString: "mongodb://analytics-cluster:27017/analytics"
+    #   maxConnections: 25
+    #   poolMode: "statement"
+    #   readPreference: "secondary"
+
+  # User authentication - these should be configured per environment
+  users:
+    {}
+    # Example:
+    # app_user:
+    #   password: "scram-sha-256:password_hash"
+    #   poolMode: "session"
+    #   maxUserConnections: 25
+    #   allowedDatabases: ["app_db"]
+    # readonly_user:
+    #   password: "scram-sha-256:password_hash"
+    #   readOnly: true
+    #   maxUserConnections: 10
+
+# Deployment configuration
+replicaCount: 2
+
+# Resource configuration
+resources:
+  limits:
+    cpu: 1000m
+    memory: 1Gi
+  requests:
+    cpu: 500m
+    memory: 512Mi
+
+# Autoscaling configuration
+autoscaling:
+  enabled: false
+  minReplicas: 2
+  maxReplicas: 10
+  targetCPUUtilizationPercentage: 80
+  targetMemoryUtilizationPercentage: 80
+
+# Node selection
+nodeSelector: {}
+
+# Tolerations for pod assignment
+tolerations: []
+
+# Affinity for pod assignment
+affinity: {}
+
+# Pod security context
+podSecurityContext:
+  fsGroup: 1001
+  runAsNonRoot: true
+  runAsUser: 1001
+
+# Container security context
+securityContext:
+  allowPrivilegeEscalation: false
+  capabilities:
+    drop:
+      - ALL
+  readOnlyRootFilesystem: true
+  runAsNonRoot: true
+  runAsUser: 1001
+
+# Service configuration
+service:
+  type: ClusterIP
+  port: 27017
+  targetPort: mongobouncer
+  annotations: {}
+  # External traffic policy for LoadBalancer/NodePort
+  # externalTrafficPolicy: Cluster
+
+# ServiceAccount configuration
+serviceAccount:
+  # Specifies whether a service account should be created
+  create: true
+  # Annotations to add to the service account
+  annotations: {}
+  # The name of the service account to use.
+  name: ""
+
+# Pod disruption budget
+podDisruptionBudget:
+  enabled: true
+  minAvailable: 1
+  # maxUnavailable: 50%
+
+# Network policy
+networkPolicy:
+  enabled: false
+  # Additional ingress rules
+  ingress: []
+  # Additional egress rules
+  egress: []
+
+# Ingress configuration (not typically used for MongoDB proxy)
+ingress:
+  enabled: false
+  className: ""
+  annotations: {}
+  hosts: []
+  tls: []
+
+# Monitoring configuration
+monitoring:
+  # Prometheus metrics
+  prometheus:
+    enabled: true
+    port: 9090
+    path: "/metrics"
+    interval: "30s"
+
+  # ServiceMonitor for Prometheus Operator
+  serviceMonitor:
+    enabled: true
+    namespace: ""
+    additionalLabels: {}
+    annotations: {}
+
+  # Health check endpoint
+  healthCheck:
+    enabled: true
+    path: "/health"
+    port: 8080
+
+# Persistence (for logs or temporary files)
+persistence:
+  enabled: false
+  # storageClassName: ""
+  accessMode: ReadWriteOnce
+  size: 1Gi
+  # existingClaim: ""
+
+# Extra environment variables
+extraEnvVars:
+  []
+  # - name: EXAMPLE_VAR
+  #   value: "example_value"
+
+# Extra environment variables from ConfigMap or Secret
+extraEnvVarsConfigMap: ""
+extraEnvVarsSecret: ""
+
+# Extra volumes
+extraVolumes:
+  []
+  # - name: extra-volume
+  #   configMap:
+  #     name: extra-configmap
+
+# Extra volume mounts
+extraVolumeMounts:
+  []
+  # - name: extra-volume
+  #   mountPath: /extra
+
+# Pod annotations
+podAnnotations: {}
+
+# Pod labels
+podLabels: {}
+
+# Lifecycle hooks
+lifecycle:
+  {}
+  # preStop:
+  #   exec:
+  #     command: ["/bin/sh", "-c", "sleep 30"]
+
+# Liveness probe configuration
+livenessProbe:
+  enabled: true
+  initialDelaySeconds: 30
+  periodSeconds: 10
+  timeoutSeconds: 5
+  successThreshold: 1
+  failureThreshold: 5
+
+# Readiness probe configuration
+readinessProbe:
+  enabled: true
+  initialDelaySeconds: 5
+  periodSeconds: 10
+  timeoutSeconds: 5
+  successThreshold: 1
+  failureThreshold: 3
+
+# Startup probe configuration
+startupProbe:
+  enabled: true
+  initialDelaySeconds: 10
+  periodSeconds: 10
+  timeoutSeconds: 5
+  successThreshold: 1
+  failureThreshold: 30
+
+# Init containers
+initContainers: []
+
+# Sidecar containers
+sidecars: []
+
+# Priority class name
+priorityClassName: ""
+
+# Runtime class name
+runtimeClassName: ""
+
+# Topology spread constraints
+topologySpreadConstraints: []
+
+# Pod management policy (for StatefulSet)
+podManagementPolicy: "Parallel"
+
+# Update strategy
+updateStrategy:
+  type: RollingUpdate
+  rollingUpdate:
+    maxSurge: 1
+    maxUnavailable: 0
+
+# Termination grace period
+terminationGracePeriodSeconds: 60
+
+# DNS configuration
+dnsConfig: {}
+dnsPolicy: "ClusterFirst"
+
+# Host network
+hostNetwork: false
+
+# Enable/disable tests
+tests:
+  enabled: true

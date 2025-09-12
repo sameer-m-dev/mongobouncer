@@ -1,0 +1,30 @@
+{
+  // Use IntelliSense to learn about possible attributes.
+  // Hover to view descriptions of existing attributes.
+  // For more information, visit: https://go.microsoft.com/fwlink/?linkid=830387
+  "version": "0.2.0",
+  "configurations": [
+    {
+      "name": "MongoBouncer",
+      "type": "go",
+      "request": "launch",
+      "program": "${workspaceFolder}/mongobouncer.go",
+      // "envFile": "${workspaceFolder}/.vscode/env",
+      // "env": {
+      //   "MODE": "server",
+      //   "SERVER_TYPE": "unified"
+      // }
+    },
+    {
+      "name": "MongoBouncer With Flags",
+      "type": "go",
+      "request": "launch",
+      "program": "${workspaceFolder}/mongobouncer.go",
+      "args": [
+        "--verbose",
+        "--config",
+        "${workspaceFolder}/tools/config/mongobouncer/config.toml",
+      ],
+    },
+  ]
+}

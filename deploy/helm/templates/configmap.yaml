@@ -1,0 +1,132 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ include "mongobouncer.configName" . }}
+  labels:
+    {{- include "mongobouncer.labels" . | nindent 4 }}
+data:
+  mongobouncer.toml: |
+    [mongobouncer]
+    listen_addr = "{{ .Values.app.config.listenAddr }}"
+    listen_port = {{ .Values.app.config.listenPort }}
+    log_level = "{{ .Values.app.config.logLevel }}"
+    verbose = {{ .Values.app.config.verbose }}
+
+    # Connection management
+    pool_mode = "{{ .Values.app.config.poolMode }}"
+    default_pool_size = {{ .Values.app.config.defaultPoolSize }}
+    max_client_conn = {{ .Values.app.config.maxClientConn }}
+    {{- if .Values.app.config.minPoolSize }}
+    min_pool_size = {{ .Values.app.config.minPoolSize }}
+    {{- end }}
+
+    {{- if .Values.app.config.tls.enabled }}
+    [mongobouncer.tls]
+    enabled = true
+    cert_file = "{{ .Values.app.config.tls.certFile }}"
+    key_file = "{{ .Values.app.config.tls.keyFile }}"
+    {{- if .Values.app.config.tls.caFile }}
+    ca_file = "{{ .Values.app.config.tls.caFile }}"
+    {{- end }}
+    verify_client = {{ .Values.app.config.tls.verifyClient }}
+    {{- end }}
+
+    [mongobouncer.mongodb]
+    default_read_preference = "{{ .Values.app.config.mongodb.defaultReadPreference }}"
+    default_write_concern = "{{ .Values.app.config.mongodb.defaultWriteConcern }}"
+    default_read_concern = "{{ .Values.app.config.mongodb.defaultReadConcern }}"
+    max_bson_object_size = {{ .Values.app.config.mongodb.maxBsonObjectSize }}
+    enable_retryable_writes = {{ .Values.app.config.mongodb.enableRetryableWrites }}
+    enable_retryable_reads = {{ .Values.app.config.mongodb.enableRetryableReads }}
+
+    {{- if .Values.app.config.dynamic.enabled }}
+    [mongobouncer.dynamic]
+    enabled = {{ .Values.app.config.dynamic.enabled }}
+    config_reload_interval = "{{ .Values.app.config.dynamic.configReloadInterval }}"
+    management_port = {{ .Values.app.config.dynamic.managementPort }}
+    management_enabled = {{ .Values.app.config.dynamic.managementEnabled }}
+    read_only_mode = {{ .Values.app.config.dynamic.readOnlyMode }}
+    {{- end }}
+
+    {{- if .Values.monitoring.prometheus.enabled }}
+    [mongobouncer.metrics]
+    address = "{{ .Values.app.config.listenAddr }}:{{ .Values.monitoring.prometheus.port }}"
+    enabled = true
+    path = "{{ .Values.monitoring.prometheus.path }}"
+    {{- end }}
+
+    [mongobouncer.performance]
+    tcp_keepalive = {{ .Values.app.config.performance.tcpKeepalive }}
+    {{- if .Values.app.config.performance.tcpKeepalive }}
+    tcp_keepalive_idle = {{ .Values.app.config.performance.tcpKeepaliveIdle }}
+    tcp_keepalive_interval = {{ .Values.app.config.performance.tcpKeepaliveInterval }}
+    tcp_keepalive_count = {{ .Values.app.config.performance.tcpKeepaliveCount }}
+    {{- end }}
+    listen_backlog = {{ .Values.app.config.performance.listenBacklog }}
+    max_packet_size = {{ .Values.app.config.performance.maxPacketSize }}
+
+    {{- if .Values.app.databases }}
+    [databases]
+    {{- range $key, $db := .Values.app.databases }}
+    {{- if $db.connectionString }}
+    {{ $key }} = "{{ $db.connectionString }}"
+    {{- else }}
+    [databases.{{ $key }}]
+    {{- if $db.host }}
+    host = "{{ $db.host }}"
+    {{- end }}
+    {{- if $db.port }}
+    port = {{ $db.port }}
+    {{- end }}
+    {{- if $db.database }}
+    database = "{{ $db.database }}"
+    {{- end }}
+    {{- if $db.maxConnections }}
+    max_connections = {{ $db.maxConnections }}
+    {{- end }}
+    {{- if $db.poolMode }}
+    pool_mode = "{{ $db.poolMode }}"
+    {{- end }}
+    {{- if $db.readPreference }}
+    read_preference = "{{ $db.readPreference }}"
+    {{- end }}
+    {{- if $db.writeConcern }}
+    write_concern = "{{ $db.writeConcern }}"
+    {{- end }}
+    {{- if $db.readConcern }}
+    read_concern = "{{ $db.readConcern }}"
+    {{- end }}
+    {{- end }}
+    {{- end }}
+    {{- end }}
+
+    {{- if .Values.app.users }}
+    [users]
+    {{- range $key, $user := .Values.app.users }}
+    [users.{{ $key }}]
+    {{- if $user.password }}
+    password = "{{ $user.password }}"
+    {{- end }}
+    {{- if $user.poolMode }}
+    pool_mode = "{{ $user.poolMode }}"
+    {{- end }}
+    {{- if $user.maxUserConnections }}
+    max_user_connections = {{ $user.maxUserConnections }}
+    {{- end }}
+    {{- if $user.allowedDatabases }}
+    allowed_databases = {{ $user.allowedDatabases | toJson }}
+    {{- end }}
+    {{- if $user.defaultDatabase }}
+    default_database = "{{ $user.defaultDatabase }}"
+    {{- end }}
+    {{- if $user.readOnly }}
+    read_only = {{ $user.readOnly }}
+    {{- end }}
+    {{- if $user.adminAccess }}
+    admin_access = {{ $user.adminAccess }}
+    {{- end }}
+    {{- if $user.queryTimeout }}
+    query_timeout = "{{ $user.queryTimeout }}"
+    {{- end }}
+    {{- end }}
+    {{- end }}

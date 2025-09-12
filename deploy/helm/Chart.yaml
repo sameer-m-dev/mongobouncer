@@ -1,0 +1,27 @@
+apiVersion: v2
+name: mongobouncer
+description: A MongoDB connection pooling proxy - the pgbouncer equivalent for MongoDB
+type: application
+version: 0.1.0
+appVersion: "1.0.0"
+home: https://github.com/sameer-m-dev/mongobouncer
+sources:
+  - https://github.com/sameer-m-dev/mongobouncer
+maintainers:
+  - name: Sameer Malhotra
+    email: sameer@example.com
+keywords:
+  - mongodb
+  - proxy
+  - connection-pooling
+  - database
+  - pgbouncer
+annotations:
+  category: Database
+  artifacthub.io/license: MIT
+  artifacthub.io/links: |
+    - name: Chart Source
+      url: https://github.com/sameer-m-dev/mongobouncer/tree/main/deploy/mongobouncer
+  artifacthub.io/containsSecurityUpdates: "false"
+  artifacthub.io/changes: |
+    - Initial Helm chart release for MongoBouncer
