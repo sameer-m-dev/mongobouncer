@@ -22,7 +22,7 @@
       "program": "${workspaceFolder}/mongobouncer.go",
       "args": [
         "--config",
-        "${workspaceFolder}/tools/config/mongobouncer/config.toml",
+        "${workspaceFolder}/examples/mongobouncer.test.toml",
       ],
     },
   ]

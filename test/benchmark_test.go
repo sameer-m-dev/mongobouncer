@@ -7,7 +7,6 @@ import (
 
 	"go.uber.org/zap"
 
-	"github.com/sameer-m-dev/mongobouncer/auth"
 	"github.com/sameer-m-dev/mongobouncer/pool"
 	"github.com/sameer-m-dev/mongobouncer/proxy"
 	"github.com/sameer-m-dev/mongobouncer/util"
@@ -73,61 +72,13 @@ func BenchmarkRouting(b *testing.B) {
 	})
 }
 
-func BenchmarkAuthentication(b *testing.B) {
-	logger := zap.NewNop()
-
-	b.Run("TrustAuth", func(b *testing.B) {
-		m, _ := auth.NewManager(logger, "trust", "", "", nil, nil)
-		b.ResetTimer()
-		for i := 0; i < b.N; i++ {
-			_ = m.Authenticate("user", "pass")
-		}
-	})
-
-	b.Run("MD5Auth", func(b *testing.B) {
-		// Set up auth manager with users
-		m, _ := auth.NewManager(logger, "md5", "", "", nil, nil)
-		// In real scenario, would load from file
-
-		b.ResetTimer()
-		for i := 0; i < b.N; i++ {
-			_ = m.Authenticate("testuser", "testpass")
-		}
-	})
-
-	b.Run("UserLookup", func(b *testing.B) {
-		m, _ := auth.NewManager(logger, "trust", "", "",
-			[]string{"admin1", "admin2"},
-			[]string{"stats1", "stats2"})
-
-		b.ResetTimer()
-		for i := 0; i < b.N; i++ {
-			_, _ = m.GetUser("testuser")
-		}
-	})
-
-	b.Run("PermissionCheck", func(b *testing.B) {
-		m, _ := auth.NewManager(logger, "trust", "", "",
-			[]string{"admin1", "admin2", "admin3"},
-			[]string{"stats1", "stats2", "stats3"})
-
-		users := []string{"admin1", "stats1", "regular", "admin2"}
-		b.ResetTimer()
-		for i := 0; i < b.N; i++ {
-			user := users[i%len(users)]
-			_ = m.IsAdminUser(user)
-			_ = m.IsStatsUser(user)
-		}
-	})
-}
-
 func BenchmarkConnectionPool(b *testing.B) {
 	logger := zap.NewNop()
 	metrics, _ := util.NewMetricsClient(logger, "localhost:9090")
 
 	b.Run("SessionMode", func(b *testing.B) {
-		m := pool.NewManager(logger, metrics, "session", 10, 100, 10, 1000)
-		p := m.GetPool("bench", nil, pool.SessionMode, 100)
+		m := pool.NewManager(logger, metrics, "session", 10, 100, 1000)
+		p := m.GetPool("bench", nil, pool.SessionMode)
 
 		b.ResetTimer()
 		b.RunParallel(func(pb *testing.PB) {
@@ -143,8 +94,8 @@ func BenchmarkConnectionPool(b *testing.B) {
 	})
 
 	b.Run("StatementMode", func(b *testing.B) {
-		m := pool.NewManager(logger, metrics, "statement", 10, 100, 10, 1000)
-		p := m.GetPool("bench", nil, pool.StatementMode, 100)
+		m := pool.NewManager(logger, metrics, "statement", 10, 100, 1000)
+		p := m.GetPool("bench", nil, pool.StatementMode)
 
 		b.ResetTimer()
 		b.RunParallel(func(pb *testing.PB) {
@@ -160,8 +111,8 @@ func BenchmarkConnectionPool(b *testing.B) {
 	})
 
 	b.Run("HighContention", func(b *testing.B) {
-		m := pool.NewManager(logger, metrics, "statement", 2, 10, 2, 1000) // Small pool
-		p := m.GetPool("bench", nil, pool.StatementMode, 10)
+		m := pool.NewManager(logger, metrics, "statement", 2, 10, 1000) // Small pool
+		p := m.GetPool("bench", nil, pool.StatementMode)
 
 		b.ResetTimer()
 		b.RunParallel(func(pb *testing.PB) {
@@ -216,15 +167,14 @@ func BenchmarkConcurrentOperations(b *testing.B) {
 
 	b.Run("MixedWorkload", func(b *testing.B) {
 		// Set up components
-		authM, _ := auth.NewManager(logger, "trust", "", "", nil, nil)
-		poolM := pool.NewManager(logger, metrics, "session", 5, 50, 5, 500)
+		poolM := pool.NewManager(logger, metrics, "session", 5, 50, 500)
 		router := proxy.NewDatabaseRouter(logger)
 
 		// Set up routes
 		for i := 0; i < 10; i++ {
 			dbName := fmt.Sprintf("db%d", i)
 			router.AddRoute(dbName, &proxy.RouteConfig{DatabaseName: dbName})
-			poolM.GetPool(dbName, nil, pool.SessionMode, 50)
+			poolM.GetPool(dbName, nil, pool.SessionMode)
 		}
 
 		b.ResetTimer()
@@ -233,15 +183,12 @@ func BenchmarkConcurrentOperations(b *testing.B) {
 			for pb.Next() {
 				// Simulate mixed operations
 
-				// 1. Authenticate
-				_ = authM.Authenticate(clientID, "pass")
-
-				// 2. Route database
+				// 1. Route database
 				dbName := fmt.Sprintf("db%d", b.N%10)
 				_, _ = router.GetRoute(dbName)
 
-				// 3. Get connection
-				p := poolM.GetPool(dbName, nil, pool.SessionMode, 50)
+				// 2. Get connection
+				p := poolM.GetPool(dbName, nil, pool.SessionMode)
 				conn, err := p.Checkout(clientID)
 				if err == nil {
 					p.Return(conn)
@@ -269,13 +216,13 @@ func BenchmarkMemoryAllocations(b *testing.B) {
 		b.ReportAllocs()
 		b.ResetTimer()
 		for i := 0; i < b.N; i++ {
-			m := pool.NewManager(logger, metrics, "session", 2, 10, 2, 100)
-			_ = m.GetPool("test", nil, pool.SessionMode, 10)
+			m := pool.NewManager(logger, metrics, "session", 2, 10, 100)
+			_ = m.GetPool("test", nil, pool.SessionMode)
 		}
 	})
 
 	b.Run("ClientRegistration", func(b *testing.B) {
-		m := pool.NewManager(logger, metrics, "session", 2, 10, 2, 10000)
+		m := pool.NewManager(logger, metrics, "session", 2, 10, 10000)
 		b.ReportAllocs()
 		b.ResetTimer()
 		for i := 0; i < b.N; i++ {
@@ -295,9 +242,7 @@ func BenchmarkStressTest(b *testing.B) {
 
 	b.Run("FullSystemStress", func(b *testing.B) {
 		// Create all components
-		authM, _ := auth.NewManager(logger, "trust", "", "",
-			[]string{"admin"}, []string{"stats"})
-		poolM := pool.NewManager(logger, metrics, "statement", 20, 200, 20, 2000)
+		poolM := pool.NewManager(logger, metrics, "statement", 20, 200, 2000)
 		router := proxy.NewDatabaseRouter(logger)
 
 		// Set up 50 databases
@@ -311,7 +256,7 @@ func BenchmarkStressTest(b *testing.B) {
 		router.AddRoute("*", &proxy.RouteConfig{DatabaseName: "*"})
 
 		// Prepare workload distribution
-		operations := []string{"auth", "route", "pool", "stats"}
+		operations := []string{"route", "pool", "stats"}
 
 		var mu sync.Mutex
 		opCounts := make(map[string]int)
@@ -326,10 +271,6 @@ func BenchmarkStressTest(b *testing.B) {
 				localCounts[op]++
 
 				switch op {
-				case "auth":
-					_ = authM.Authenticate(clientID, "pass")
-					_ = authM.IsAdminUser(clientID)
-
 				case "route":
 					dbName := fmt.Sprintf("db%d", b.N%60) // Some will hit wildcard
 					_, _ = router.GetRoute(dbName)
@@ -337,7 +278,7 @@ func BenchmarkStressTest(b *testing.B) {
 				case "pool":
 					dbName := fmt.Sprintf("db%d", b.N%50)
 					if client, err := poolM.RegisterClient(clientID, "user", dbName, pool.StatementMode); err == nil {
-						p := poolM.GetPool(dbName, nil, pool.StatementMode, 200)
+						p := poolM.GetPool(dbName, nil, pool.StatementMode)
 						if conn, err := p.Checkout(clientID); err == nil {
 							p.Return(conn)
 						}
@@ -346,7 +287,7 @@ func BenchmarkStressTest(b *testing.B) {
 
 				case "stats":
 					dbName := fmt.Sprintf("db%d", b.N%50)
-					p := poolM.GetPool(dbName, nil, pool.StatementMode, 200)
+					p := poolM.GetPool(dbName, nil, pool.StatementMode)
 					_ = p.GetStats()
 					_ = router.Statistics()
 				}

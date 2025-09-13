@@ -145,7 +145,7 @@ var (
 			Help:    "Time spent waiting for connections from the pool",
 			Buckets: prometheus.DefBuckets,
 		},
-		[]string{"pool_name"},
+		[]string{"database"},
 	)
 
 	poolConnections = prometheus.NewGaugeVec(
@@ -153,7 +153,7 @@ var (
 			Name: "mongobouncer_pool_connections_total",
 			Help: "Current number of connections in the pool",
 		},
-		[]string{"pool_name", "state"}, // state: available, in_use
+		[]string{"database", "state"}, // state: available, in_use
 	)
 
 	// Additional metrics for comprehensive dashboard
@@ -195,6 +195,63 @@ var (
 			Help: "Total number of authentication failures",
 		},
 		[]string{},
+	)
+
+	// MongoDB driver pool metrics
+	mongodbPoolActiveConnections = prometheus.NewGaugeVec(
+		prometheus.GaugeOpts{
+			Name: "mongobouncer_mongodb_pool_active_connections",
+			Help: "Number of active connections in MongoDB driver pool",
+		},
+		[]string{"database"},
+	)
+
+	mongodbPoolTotalConnections = prometheus.NewGaugeVec(
+		prometheus.GaugeOpts{
+			Name: "mongobouncer_mongodb_pool_total_connections",
+			Help: "Total number of connections in MongoDB driver pool",
+		},
+		[]string{"database"},
+	)
+
+	mongodbPoolMaxConnections = prometheus.NewGaugeVec(
+		prometheus.GaugeOpts{
+			Name: "mongobouncer_mongodb_pool_max_connections",
+			Help: "Maximum number of connections allowed in MongoDB driver pool",
+		},
+		[]string{"database"},
+	)
+
+	mongodbPoolUtilizationRatio = prometheus.NewGaugeVec(
+		prometheus.GaugeOpts{
+			Name: "mongobouncer_mongodb_pool_utilization_ratio",
+			Help: "MongoDB driver pool utilization ratio (active/max)",
+		},
+		[]string{"database"},
+	)
+
+	mongodbPoolCheckoutTotal = prometheus.NewCounterVec(
+		prometheus.CounterOpts{
+			Name: "mongobouncer_mongodb_pool_checkout_total",
+			Help: "Total number of connection checkouts from MongoDB driver pool",
+		},
+		[]string{"database"},
+	)
+
+	mongodbPoolCheckinTotal = prometheus.NewCounterVec(
+		prometheus.CounterOpts{
+			Name: "mongobouncer_mongodb_pool_checkin_total",
+			Help: "Total number of connection checkins to MongoDB driver pool",
+		},
+		[]string{"database"},
+	)
+
+	mongodbPoolCheckoutFailuresTotal = prometheus.NewCounterVec(
+		prometheus.CounterOpts{
+			Name: "mongobouncer_mongodb_pool_checkout_failures_total",
+			Help: "Total number of connection checkout failures from MongoDB driver pool",
+		},
+		[]string{"database"},
 	)
 
 	poolTimeoutsTotal = prometheus.NewCounterVec(
@@ -401,6 +458,14 @@ func NewMetricsClient(logger *zap.Logger, metricsAddr string) (*MetricsClient, e
 		maxClientConnections,
 		maxUserConnections,
 		clientWaitTime,
+		// MongoDB driver pool metrics
+		mongodbPoolActiveConnections,
+		mongodbPoolTotalConnections,
+		mongodbPoolMaxConnections,
+		mongodbPoolUtilizationRatio,
+		mongodbPoolCheckoutTotal,
+		mongodbPoolCheckinTotal,
+		mongodbPoolCheckoutFailuresTotal,
 	)
 
 	// Create HTTP server for metrics endpoint
@@ -548,6 +613,27 @@ func (m *MetricsClient) Gauge(name string, value float64, tags []string, rate fl
 	case "max_user_connections":
 		user := parseUserTag(tags)
 		maxUserConnections.WithLabelValues(user).Set(value)
+	case "mongodb_pool_active_connections":
+		database := parseDatabaseTag(tags)
+		mongodbPoolActiveConnections.WithLabelValues(database).Set(value)
+	case "mongodb_pool_total_connections":
+		database := parseDatabaseTag(tags)
+		mongodbPoolTotalConnections.WithLabelValues(database).Set(value)
+	case "mongodb_pool_max_connections":
+		database := parseDatabaseTag(tags)
+		mongodbPoolMaxConnections.WithLabelValues(database).Set(value)
+	case "mongodb_pool_utilization_ratio":
+		database := parseDatabaseTag(tags)
+		mongodbPoolUtilizationRatio.WithLabelValues(database).Set(value)
+	case "mongodb_pool_checkout_total":
+		database := parseDatabaseTag(tags)
+		mongodbPoolCheckoutTotal.WithLabelValues(database).Add(value)
+	case "mongodb_pool_checkin_total":
+		database := parseDatabaseTag(tags)
+		mongodbPoolCheckinTotal.WithLabelValues(database).Add(value)
+	case "mongodb_pool_checkout_failures_total":
+		database := parseDatabaseTag(tags)
+		mongodbPoolCheckoutFailuresTotal.WithLabelValues(database).Add(value)
 	}
 
 	return nil

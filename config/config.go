@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"os"
 	"strings"
+	"time"
 
 	"github.com/BurntSushi/toml"
 	"go.mongodb.org/mongo-driver/mongo/options"
@@ -25,62 +26,66 @@ type TOMLConfig struct {
 	Users        map[string]User        `toml:"users"`
 }
 
-// MongobouncerConfig represents the main mongobouncer configuration
-type MongobouncerConfig struct {
-	ListenAddr           string   `toml:"listen_addr"`
-	ListenPort           int      `toml:"listen_port"`
-	UnixSocketPath       string   `toml:"unix_socket_path"`
-	LogLevel             string   `toml:"log_level"`
-	LogFile              string   `toml:"logfile"`
-	PidFile              string   `toml:"pidfile"`
-	AuthType             string   `toml:"auth_type"`
-	AuthFile             string   `toml:"auth_file"`
-	AuthQuery            string   `toml:"auth_query"`
-	AdminUsers           []string `toml:"admin_users"`
-	StatsUsers           []string `toml:"stats_users"`
-	PoolMode             string   `toml:"pool_mode"`
-	MinPoolSize          int      `toml:"min_pool_size"`
-	MaxPoolSize          int      `toml:"max_pool_size"`
-	ReservePoolSize      int      `toml:"reserve_pool_size"`
-	MaxClientConn        int      `toml:"max_client_conn"`
-	ServerIdleTimeout    int      `toml:"server_idle_timeout"`
-	ServerLifetime       int      `toml:"server_lifetime"`
-	ServerConnectTimeout int      `toml:"server_connect_timeout"`
-	ServerLoginRetry     int      `toml:"server_login_retry"`
-	QueryTimeout         int      `toml:"query_timeout"`
-	QueryWaitTimeout     int      `toml:"query_wait_timeout"`
-	ClientIdleTimeout    int      `toml:"client_idle_timeout"`
-	ClientLoginTimeout   int      `toml:"client_login_timeout"`
-	MetricsAddress       string   `toml:"metrics_address"`
-	MetricsEnabled       bool     `toml:"metrics_enabled"`
-	Network              string   `toml:"network"`
-	Unlink               bool     `toml:"unlink"`
-	Ping                 bool     `toml:"ping"`
-}
-
 // Database represents database configuration
 // Can be either a string (connection string) or a struct (detailed config)
 type Database struct {
-	// Connection string format (when database is just a string)
-	ConnectionString string
-
-	// Individual settings (when database is a table)
+	ConnectionString string `toml:"connection_string"`
 	Host             string `toml:"host"`
 	Port             int    `toml:"port"`
-	DBName           string `toml:"dbname"`
+	Database         string `toml:"database"`
+	DBName           string `toml:"dbname"` // Alias for database
 	User             string `toml:"user"`
 	Password         string `toml:"password"`
 	AuthDB           string `toml:"auth_db"`
+	MaxConnections   int    `toml:"max_connections"`
 	PoolMode         string `toml:"pool_mode"`
 	PoolSize         int    `toml:"pool_size"`
 	MaxDBConnections int    `toml:"max_db_connections"`
 	Label            string `toml:"label"`
 
-	// Connection options
+	// MongoDB client pool overrides (optional)
+	MongoDBMaxPoolSize            int           `toml:"max_pool_size"`
+	MongoDBMinPoolSize            int           `toml:"min_pool_size"`
+	MongoDBMaxConnIdleTime        time.Duration `toml:"max_conn_idle_time"`
+	MongoDBServerSelectionTimeout time.Duration `toml:"server_selection_timeout"`
+	MongoDBConnectTimeout         time.Duration `toml:"connect_timeout"`
+	MongoDBSocketTimeout          time.Duration `toml:"socket_timeout"`
+	MongoDBHeartbeatInterval      time.Duration `toml:"heartbeat_interval"`
+
+	// Legacy connection options (for backward compatibility)
 	MaxPoolSize              int `toml:"maxPoolSize"`
 	MinPoolSize              int `toml:"minPoolSize"`
 	MaxIdleTimeMS            int `toml:"maxIdleTimeMS"`
 	ServerSelectionTimeoutMS int `toml:"serverSelectionTimeoutMS"`
+}
+type MongobouncerConfig struct {
+	// Core server settings
+	ListenAddr string `toml:"listen_addr"`
+	ListenPort int    `toml:"listen_port"`
+	LogLevel   string `toml:"log_level"`
+	LogFile    string `toml:"logfile"`
+
+	// Connection pooling (implemented)
+	PoolMode        string `toml:"pool_mode"`
+	MaxClientConn   int    `toml:"max_client_conn"`
+
+	// Metrics (implemented)
+	MetricsAddress string `toml:"metrics_address"`
+	MetricsEnabled bool   `toml:"metrics_enabled"`
+
+	// Network settings (implemented)
+	Network string `toml:"network"`
+	Unlink  bool   `toml:"unlink"`
+
+	// MongoDB client pool settings (implemented)
+	MongoDBMaxPoolSize            int           `toml:"max_pool_size"`
+	MongoDBMinPoolSize            int           `toml:"min_pool_size"`
+	MongoDBMaxConnIdleTime        time.Duration `toml:"max_conn_idle_time"`
+	MongoDBServerSelectionTimeout time.Duration `toml:"server_selection_timeout"`
+	MongoDBConnectTimeout         time.Duration `toml:"connect_timeout"`
+	MongoDBSocketTimeout          time.Duration `toml:"socket_timeout"`
+	MongoDBHeartbeatInterval      time.Duration `toml:"heartbeat_interval"`
+	Ping                          bool          `toml:"ping"`
 }
 
 // User represents user configuration
@@ -116,11 +121,8 @@ func LoadConfig(configPath string, verbose bool) (*Config, error) {
 			ListenPort:      27017,
 			LogLevel:        "info",
 			Network:         "tcp4",
-			PoolMode:        "session",
-			MinPoolSize:     5,
-			MaxPoolSize:     20,
-			ReservePoolSize: 5,
-			MaxClientConn:   100,
+		PoolMode:        "session",
+		MaxClientConn:   100,
 			MetricsAddress:  "localhost:9090",
 			MetricsEnabled:  true,
 		},
@@ -193,56 +195,14 @@ func parseRawConfig(rawConfig map[string]interface{}, config *TOMLConfig) error 
 		if listenPort, ok := mb["listen_port"].(int64); ok {
 			config.Mongobouncer.ListenPort = int(listenPort)
 		}
-		if unixSocketPath, ok := mb["unix_socket_path"].(string); ok {
-			config.Mongobouncer.UnixSocketPath = unixSocketPath
-		}
 		if logLevel, ok := mb["log_level"].(string); ok {
 			config.Mongobouncer.LogLevel = logLevel
 		}
 		if logFile, ok := mb["logfile"].(string); ok {
 			config.Mongobouncer.LogFile = logFile
 		}
-		if pidFile, ok := mb["pidfile"].(string); ok {
-			config.Mongobouncer.PidFile = pidFile
-		}
-		if authType, ok := mb["auth_type"].(string); ok {
-			config.Mongobouncer.AuthType = authType
-		}
-		if authFile, ok := mb["auth_file"].(string); ok {
-			config.Mongobouncer.AuthFile = authFile
-		}
-		if authQuery, ok := mb["auth_query"].(string); ok {
-			config.Mongobouncer.AuthQuery = authQuery
-		}
-		if adminUsers, ok := mb["admin_users"].([]interface{}); ok {
-			for _, user := range adminUsers {
-				if userStr, ok := user.(string); ok {
-					config.Mongobouncer.AdminUsers = append(config.Mongobouncer.AdminUsers, userStr)
-				}
-			}
-		}
-		if statsUsers, ok := mb["stats_users"].([]interface{}); ok {
-			for _, user := range statsUsers {
-				if userStr, ok := user.(string); ok {
-					config.Mongobouncer.StatsUsers = append(config.Mongobouncer.StatsUsers, userStr)
-				}
-			}
-		}
 		if poolMode, ok := mb["pool_mode"].(string); ok {
 			config.Mongobouncer.PoolMode = poolMode
-		}
-		if minPoolSize, ok := mb["min_pool_size"].(int64); ok {
-			config.Mongobouncer.MinPoolSize = int(minPoolSize)
-		}
-		if maxPoolSize, ok := mb["max_pool_size"].(int64); ok {
-			config.Mongobouncer.MaxPoolSize = int(maxPoolSize)
-		}
-		// Backward compatibility: if default_pool_size is set, use it as max_pool_size
-		if defaultPoolSize, ok := mb["default_pool_size"].(int64); ok {
-			config.Mongobouncer.MaxPoolSize = int(defaultPoolSize)
-		}
-		if reservePoolSize, ok := mb["reserve_pool_size"].(int64); ok {
-			config.Mongobouncer.ReservePoolSize = int(reservePoolSize)
 		}
 		if maxClientConn, ok := mb["max_client_conn"].(int64); ok {
 			config.Mongobouncer.MaxClientConn = int(maxClientConn)
@@ -302,9 +262,6 @@ func buildClients(config *TOMLConfig, logger *zap.Logger) ([]client, error) {
 
 		// Create listening address
 		address := fmt.Sprintf("%s:%d", config.Mongobouncer.ListenAddr, config.Mongobouncer.ListenPort)
-		if config.Mongobouncer.UnixSocketPath != "" {
-			address = config.Mongobouncer.UnixSocketPath
-		}
 
 		clients = append(clients, client{
 			address: address,
@@ -321,9 +278,6 @@ func buildClients(config *TOMLConfig, logger *zap.Logger) ([]client, error) {
 
 	// Create listening address
 	address := fmt.Sprintf("%s:%d", config.Mongobouncer.ListenAddr, config.Mongobouncer.ListenPort)
-	if config.Mongobouncer.UnixSocketPath != "" {
-		address = config.Mongobouncer.UnixSocketPath
-	}
 
 	// Process database configurations to determine the primary connection
 	// For now, we'll use the first configured database as the main connection
@@ -342,35 +296,41 @@ func buildClients(config *TOMLConfig, logger *zap.Logger) ([]client, error) {
 			uri = dbConfig
 			label = dbName
 		case map[string]interface{}:
-			// Structured format - build URI
-			host := "localhost"
-			port := 27017
-
-			if h, ok := dbConfig["host"].(string); ok {
-				host = h
-			}
-			if p, ok := dbConfig["port"].(int64); ok {
-				port = int(p)
-			}
-
-			var user, password string
-			if u, ok := dbConfig["user"].(string); ok {
-				user = u
-			}
-			if p, ok := dbConfig["password"].(string); ok {
-				password = p
-			}
-
-			// Build URI
-			if user != "" && password != "" {
-				uri = fmt.Sprintf("mongodb://%s:%s@%s:%d", user, password, host, port)
+			// Structured format - check for connection_string first
+			if connStr, ok := dbConfig["connection_string"].(string); ok && connStr != "" {
+				// Use connection_string if provided
+				uri = connStr
 			} else {
-				uri = fmt.Sprintf("mongodb://%s:%d", host, port)
-			}
+				// Build URI from individual fields
+				host := "localhost"
+				port := 27017
 
-			// Add database name if specified
-			if dbname, ok := dbConfig["dbname"].(string); ok && dbname != "" {
-				uri += "/" + dbname
+				if h, ok := dbConfig["host"].(string); ok {
+					host = h
+				}
+				if p, ok := dbConfig["port"].(int64); ok {
+					port = int(p)
+				}
+
+				var user, password string
+				if u, ok := dbConfig["user"].(string); ok {
+					user = u
+				}
+				if p, ok := dbConfig["password"].(string); ok {
+					password = p
+				}
+
+				// Build URI
+				if user != "" && password != "" {
+					uri = fmt.Sprintf("mongodb://%s:%s@%s:%d", user, password, host, port)
+				} else {
+					uri = fmt.Sprintf("mongodb://%s:%d", host, port)
+				}
+
+				// Add database name if specified
+				if dbname, ok := dbConfig["dbname"].(string); ok && dbname != "" {
+					uri += "/" + dbname
+				}
 			}
 
 			// Add connection options
@@ -379,15 +339,9 @@ func buildClients(config *TOMLConfig, logger *zap.Logger) ([]client, error) {
 				params = append(params, fmt.Sprintf("maxPoolSize=%d", maxPoolSize))
 			} else if poolSize, ok := dbConfig["pool_size"].(int64); ok && poolSize > 0 {
 				params = append(params, fmt.Sprintf("maxPoolSize=%d", poolSize))
-			} else if config.Mongobouncer.MaxPoolSize > 0 {
-				// Use default max pool size if not specified in database config
-				params = append(params, fmt.Sprintf("maxPoolSize=%d", config.Mongobouncer.MaxPoolSize))
 			}
 			if minPoolSize, ok := dbConfig["minPoolSize"].(int64); ok && minPoolSize > 0 {
 				params = append(params, fmt.Sprintf("minPoolSize=%d", minPoolSize))
-			} else if config.Mongobouncer.MinPoolSize > 0 {
-				// Use default min pool size if not specified in database config
-				params = append(params, fmt.Sprintf("minPoolSize=%d", config.Mongobouncer.MinPoolSize))
 			}
 			if maxIdleTimeMS, ok := dbConfig["maxIdleTimeMS"].(int64); ok && maxIdleTimeMS > 0 {
 				params = append(params, fmt.Sprintf("maxIdleTimeMS=%d", maxIdleTimeMS))
@@ -428,6 +382,10 @@ func buildClients(config *TOMLConfig, logger *zap.Logger) ([]client, error) {
 
 	opts := options.Client().ApplyURI(primaryURI)
 
+	// Create temporary config instance to apply MongoDB client settings
+	tempConfig := &Config{tomlConfig: config, logger: logger}
+	opts = tempConfig.applyMongoDBClientSettings(opts, "default", nil)
+
 	clients = append(clients, client{
 		address: address,
 		label:   primaryLabel,
@@ -467,6 +425,109 @@ func createLogger(level, logFile string) (*zap.Logger, error) {
 	}
 
 	return config.Build()
+}
+
+// applyMongoDBClientSettings applies MongoDB client pool settings from config
+func (c *Config) applyMongoDBClientSettings(opts *options.ClientOptions, dbName string, dbConfig *Database) *options.ClientOptions {
+	// Get defaults from mongobouncer config
+	defaults := c.tomlConfig.Mongobouncer
+
+	// Start with defaults
+	maxPoolSize := defaults.MongoDBMaxPoolSize
+	minPoolSize := defaults.MongoDBMinPoolSize
+	maxConnIdleTime := defaults.MongoDBMaxConnIdleTime
+	serverSelectionTimeout := defaults.MongoDBServerSelectionTimeout
+	connectTimeout := defaults.MongoDBConnectTimeout
+	socketTimeout := defaults.MongoDBSocketTimeout
+	heartbeatInterval := defaults.MongoDBHeartbeatInterval
+
+	// Apply database-level overrides if provided
+	overrides := make(map[string]interface{})
+	if dbConfig != nil {
+		if dbConfig.MongoDBMaxPoolSize > 0 {
+			maxPoolSize = dbConfig.MongoDBMaxPoolSize
+			overrides["max_pool_size"] = maxPoolSize
+		}
+		if dbConfig.MongoDBMinPoolSize > 0 {
+			minPoolSize = dbConfig.MongoDBMinPoolSize
+			overrides["min_pool_size"] = minPoolSize
+		}
+		if dbConfig.MongoDBMaxConnIdleTime > 0 {
+			maxConnIdleTime = dbConfig.MongoDBMaxConnIdleTime
+			overrides["max_conn_idle_time"] = maxConnIdleTime
+		}
+		if dbConfig.MongoDBServerSelectionTimeout > 0 {
+			serverSelectionTimeout = dbConfig.MongoDBServerSelectionTimeout
+			overrides["server_selection_timeout"] = serverSelectionTimeout
+		}
+		if dbConfig.MongoDBConnectTimeout > 0 {
+			connectTimeout = dbConfig.MongoDBConnectTimeout
+			overrides["connect_timeout"] = connectTimeout
+		}
+		if dbConfig.MongoDBSocketTimeout > 0 {
+			socketTimeout = dbConfig.MongoDBSocketTimeout
+			overrides["socket_timeout"] = socketTimeout
+		}
+		if dbConfig.MongoDBHeartbeatInterval > 0 {
+			heartbeatInterval = dbConfig.MongoDBHeartbeatInterval
+			overrides["heartbeat_interval"] = heartbeatInterval
+		}
+	}
+
+	// Set defaults ONLY if not configured by user
+	if maxPoolSize == 0 {
+		maxPoolSize = 20 // Only use default if user didn't provide a value
+	}
+	if minPoolSize == 0 {
+		minPoolSize = 3 // Only use default if user didn't provide a value
+	}
+	if maxConnIdleTime == 0 {
+		maxConnIdleTime = 30 * time.Second // Only use default if user didn't provide a value
+	}
+	if serverSelectionTimeout == 0 {
+		serverSelectionTimeout = 5 * time.Second // Only use default if user didn't provide a value
+	}
+	if connectTimeout == 0 {
+		connectTimeout = 5 * time.Second // Only use default if user didn't provide a value
+	}
+	if socketTimeout == 0 {
+		socketTimeout = 30 * time.Second // Only use default if user didn't provide a value
+	}
+	if heartbeatInterval == 0 {
+		heartbeatInterval = 10 * time.Second // Only use default if user didn't provide a value
+	}
+
+	// Log the configuration being used
+	if len(overrides) > 0 {
+		c.logger.Info("Using database-specific MongoDB client overrides",
+			zap.String("database", dbName),
+			zap.Any("overrides", overrides))
+	} else {
+		c.logger.Info("Using default MongoDB client settings",
+			zap.String("database", dbName))
+	}
+
+	// Apply settings
+	opts = opts.SetMaxPoolSize(uint64(maxPoolSize))
+	opts = opts.SetMinPoolSize(uint64(minPoolSize))
+	opts = opts.SetMaxConnIdleTime(maxConnIdleTime)
+	opts = opts.SetServerSelectionTimeout(serverSelectionTimeout)
+	opts = opts.SetConnectTimeout(connectTimeout)
+	opts = opts.SetSocketTimeout(socketTimeout)
+	opts = opts.SetHeartbeatInterval(heartbeatInterval)
+
+	// Log final configuration
+	c.logger.Info("MongoDB client configuration applied",
+		zap.String("database", dbName),
+		zap.Int("max_pool_size", maxPoolSize),
+		zap.Int("min_pool_size", minPoolSize),
+		zap.Duration("max_conn_idle_time", maxConnIdleTime),
+		zap.Duration("server_selection_timeout", serverSelectionTimeout),
+		zap.Duration("connect_timeout", connectTimeout),
+		zap.Duration("socket_timeout", socketTimeout),
+		zap.Duration("heartbeat_interval", heartbeatInterval))
+
+	return opts
 }
 
 // sanitizeURI removes sensitive information from URI for logging
@@ -533,6 +594,8 @@ func (c *Config) Proxies(log *zap.Logger) ([]*proxy.Proxy, error) {
 		if dbConfig.ConnectionString != "" {
 			// Use connection string
 			opts := options.Client().ApplyURI(dbConfig.ConnectionString)
+			// Apply MongoDB client pool settings from config
+			opts = c.applyMongoDBClientSettings(opts, dbName, &dbConfig)
 			mongoClient, err = mongo.Connect(log, c.metrics, opts, c.ping)
 			if err != nil {
 				return nil, fmt.Errorf("failed to connect to database %s: %v", dbName, err)
@@ -541,6 +604,14 @@ func (c *Config) Proxies(log *zap.Logger) ([]*proxy.Proxy, error) {
 			// Use structured config
 			connectionString := fmt.Sprintf("mongodb://%s:%d/%s", dbConfig.Host, dbConfig.Port, dbConfig.DBName)
 			opts := options.Client().ApplyURI(connectionString)
+			// Add robust connection pool settings for high-concurrency scenarios
+			opts = opts.SetMaxPoolSize(20)                         // Slightly higher than MongoBouncer's max_pool_size (10)
+			opts = opts.SetMinPoolSize(3)                          // Match MongoBouncer's min_pool_size
+			opts = opts.SetMaxConnIdleTime(30 * time.Second)       // Keep connections alive longer
+			opts = opts.SetServerSelectionTimeout(5 * time.Second) // Shorter server selection timeout
+			opts = opts.SetConnectTimeout(5 * time.Second)         // Shorter connection timeout
+			opts = opts.SetSocketTimeout(30 * time.Second)         // Longer socket timeout
+			opts = opts.SetHeartbeatInterval(10 * time.Second)     // More frequent heartbeats
 			mongoClient, err = mongo.Connect(log, c.metrics, opts, c.ping)
 			if err != nil {
 				return nil, fmt.Errorf("failed to connect to database %s: %v", dbName, err)
@@ -565,13 +636,22 @@ func (c *Config) Proxies(log *zap.Logger) ([]*proxy.Proxy, error) {
 	}
 
 	// Create pool manager
+	// Use MongoDB driver's pool settings for MongoBouncer's pool metrics
+	mongodbMaxPoolSize := c.tomlConfig.Mongobouncer.MongoDBMaxPoolSize
+	if mongodbMaxPoolSize == 0 {
+		mongodbMaxPoolSize = 20 // Default if not configured
+	}
+	mongodbMinPoolSize := c.tomlConfig.Mongobouncer.MongoDBMinPoolSize
+	if mongodbMinPoolSize == 0 {
+		mongodbMinPoolSize = 3 // Default if not configured
+	}
+
 	poolManager := pool.NewManager(
 		log,
 		c.metrics,
 		c.tomlConfig.Mongobouncer.PoolMode,
-		c.tomlConfig.Mongobouncer.MinPoolSize,
-		c.tomlConfig.Mongobouncer.MaxPoolSize,
-		c.tomlConfig.Mongobouncer.ReservePoolSize,
+		mongodbMinPoolSize, // Use MongoDB driver's min pool size
+		mongodbMaxPoolSize, // Use MongoDB driver's max pool size
 		c.tomlConfig.Mongobouncer.MaxClientConn,
 	)
 
@@ -594,13 +674,41 @@ func (c *Config) GetDatabases() map[string]Database {
 	for name, dbConfig := range c.tomlConfig.Databases {
 		switch v := dbConfig.(type) {
 		case string:
-			// Simple connection string format
-			result[name] = Database{
-				ConnectionString: v,
-			}
+			// Simple connection string format is no longer supported
+			// This will cause a validation error to help users understand the correct format
+			panic(fmt.Sprintf("invalid database configuration for '%s': simple string format is no longer supported. Please use structured format with 'connection_string' field. Example: %s = { connection_string = \"%s\" }", name, name, v))
 		case map[string]interface{}:
 			// Structured format - convert to Database struct
 			db := Database{}
+
+			// connection_string is preferred, but individual fields are also supported
+			if connStr, ok := v["connection_string"].(string); ok && connStr != "" {
+				db.ConnectionString = connStr
+			} else {
+				// Fallback: build connection string from individual fields
+				host := "localhost"
+				port := 27017
+				dbname := ""
+
+				if h, ok := v["host"].(string); ok && h != "" {
+					host = h
+				}
+				if p, ok := v["port"].(int64); ok && p > 0 {
+					port = int(p)
+				}
+				if d, ok := v["dbname"].(string); ok && d != "" {
+					dbname = d
+				}
+
+				// Build basic connection string from individual fields
+				if dbname != "" {
+					db.ConnectionString = fmt.Sprintf("mongodb://%s:%d/%s", host, port, dbname)
+				} else {
+					db.ConnectionString = fmt.Sprintf("mongodb://%s:%d", host, port)
+				}
+			}
+
+			// Parse individual fields (optional overrides)
 			if host, ok := v["host"].(string); ok {
 				db.Host = host
 			}
@@ -631,6 +739,41 @@ func (c *Config) GetDatabases() map[string]Database {
 			if label, ok := v["label"].(string); ok {
 				db.Label = label
 			}
+
+			// Parse MongoDB client pool overrides
+			if maxpoolsize, ok := v["max_pool_size"].(int64); ok {
+				db.MongoDBMaxPoolSize = int(maxpoolsize)
+			}
+			if minpoolsize, ok := v["min_pool_size"].(int64); ok {
+				db.MongoDBMinPoolSize = int(minpoolsize)
+			}
+			if maxidletime, ok := v["max_conn_idle_time"].(string); ok {
+				if duration, err := time.ParseDuration(maxidletime); err == nil {
+					db.MongoDBMaxConnIdleTime = duration
+				}
+			}
+			if seltimeout, ok := v["server_selection_timeout"].(string); ok {
+				if duration, err := time.ParseDuration(seltimeout); err == nil {
+					db.MongoDBServerSelectionTimeout = duration
+				}
+			}
+			if connecttimeout, ok := v["connect_timeout"].(string); ok {
+				if duration, err := time.ParseDuration(connecttimeout); err == nil {
+					db.MongoDBConnectTimeout = duration
+				}
+			}
+			if sockettimeout, ok := v["socket_timeout"].(string); ok {
+				if duration, err := time.ParseDuration(sockettimeout); err == nil {
+					db.MongoDBSocketTimeout = duration
+				}
+			}
+			if heartbeatinterval, ok := v["heartbeat_interval"].(string); ok {
+				if duration, err := time.ParseDuration(heartbeatinterval); err == nil {
+					db.MongoDBHeartbeatInterval = duration
+				}
+			}
+
+			// Legacy fields for backward compatibility
 			if maxpoolsize, ok := v["maxPoolSize"].(int64); ok {
 				db.MaxPoolSize = int(maxpoolsize)
 			}

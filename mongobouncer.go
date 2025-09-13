@@ -51,7 +51,7 @@ func printUsage() {
 	fmt.Println()
 	fmt.Println("CONFIGURATION:")
 	fmt.Println("  All other configuration options should be specified in the TOML configuration file.")
-	fmt.Println("  See examples/mongobouncer.toml.example for a complete configuration example.")
+	fmt.Println("  See examples/mongobouncer.example.toml for a complete configuration example.")
 	fmt.Println()
 	fmt.Println("EXAMPLES:")
 	fmt.Printf("  %s --config /path/to/mongobouncer.toml\n", os.Args[0])

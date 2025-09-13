@@ -22,7 +22,6 @@ func TestPoolManager(t *testing.T) {
 		assert.Equal(t, SessionMode, m.defaultMode)
 		assert.Equal(t, 5, m.minPoolSize)
 		assert.Equal(t, 20, m.maxPoolSize)
-		assert.Equal(t, 5, m.reserveSize)
 		assert.Equal(t, 100, m.maxClientConn)
 	})
 
@@ -47,20 +46,18 @@ func TestPoolManager(t *testing.T) {
 		m := NewManager(logger, metrics, "session", 5, 10, 2, 50)
 
 		// Get pool for database
-		pool1 := m.GetPool("db1", nil, SessionMode, 20)
+		pool1 := m.GetPool("db1", nil, SessionMode)
 		assert.NotNil(t, pool1)
 		assert.Equal(t, "db1", pool1.name)
 		assert.Equal(t, SessionMode, pool1.mode)
-		assert.Equal(t, 20, pool1.maxSize)
 
 		// Get same pool again
-		pool2 := m.GetPool("db1", nil, SessionMode, 30)
+		pool2 := m.GetPool("db1", nil, SessionMode)
 		assert.Equal(t, pool1, pool2) // Should be same instance
 
 		// Get pool with defaults
-		pool3 := m.GetPool("db2", nil, "", 0)
+		pool3 := m.GetPool("db2", nil, "")
 		assert.Equal(t, SessionMode, pool3.mode)
-		assert.Equal(t, 10, pool3.maxSize)
 	})
 
 	t.Run("ClientRegistration", func(t *testing.T) {
@@ -96,7 +93,7 @@ func TestConnectionPool(t *testing.T) {
 
 	t.Run("CheckoutReturn", func(t *testing.T) {
 		m := NewManager(logger, metrics, "session", 1, 2, 1, 10)
-		pool := m.GetPool("test", nil, SessionMode, 2)
+		pool := m.GetPool("test", nil, SessionMode)
 
 		// Checkout connection
 		conn1, err := pool.Checkout("client1")
@@ -118,7 +115,7 @@ func TestConnectionPool(t *testing.T) {
 
 	t.Run("PoolLimit", func(t *testing.T) {
 		m := NewManager(logger, metrics, "session", 1, 2, 1, 10)
-		pool := m.GetPool("test", nil, SessionMode, 2)
+		pool := m.GetPool("test", nil, SessionMode)
 
 		// Checkout max connections
 		conn1, err := pool.Checkout("client1")
@@ -156,7 +153,7 @@ func TestConnectionPool(t *testing.T) {
 
 	t.Run("Statistics", func(t *testing.T) {
 		m := NewManager(logger, metrics, "session", 1, 5, 1, 10)
-		pool := m.GetPool("test", nil, SessionMode, 5)
+		pool := m.GetPool("test", nil, SessionMode)
 
 		// Initial stats
 		stats := pool.GetStats()
@@ -197,7 +194,7 @@ func TestPoolModes(t *testing.T) {
 		assert.NoError(t, err)
 
 		// Create a mock pool
-		pool := m.GetPool("db1", nil, SessionMode, 10)
+		pool := m.GetPool("db1", nil, SessionMode)
 
 		// In session mode, client should keep same connection
 		// Note: GetConnection needs integration with router, so we test the logic directly
@@ -250,7 +247,7 @@ func TestConcurrentAccess(t *testing.T) {
 	metrics, _ := util.NewMetricsClient(logger, "localhost:9090")
 
 	m := NewManager(logger, metrics, "session", 1, 5, 1, 100)
-	pool := m.GetPool("test", nil, SessionMode, 5)
+	pool := m.GetPool("test", nil, SessionMode)
 
 	// Concurrent checkouts and returns
 	var wg sync.WaitGroup

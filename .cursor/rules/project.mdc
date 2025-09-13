@@ -212,7 +212,7 @@ reporting = "mongodb://reporting-cluster:27017/reports?readPreference=secondary"
 
 ### Core Application Files
 - `mongobouncer.go` - Main application entry point
-- `examples/mongobouncer.toml.example` - Example configuration file
+- `examples/mongobouncer.example.toml` - Example configuration file
 
 ### Package Details
 ```
@@ -250,7 +250,7 @@ auth/
 
 ### Local Development
 1. **Setup**: `go mod tidy` to install dependencies
-2. **Configure**: Copy `mongobouncer.toml.example` to `mongobouncer.toml`
+2. **Configure**: Copy `mongobouncer.example.toml` to `mongobouncer.toml`
 3. **Test**: `go test ./...` to run all tests  
 4. **Build**: `go build -o bin/mongobouncer .`
 5. **Run**: `./mongobouncer -config mongobouncer.toml -verbose`
@@ -321,7 +321,7 @@ cd mongobouncer
 go build -o bin/mongobouncer .
 
 # 2. Configure
-cp examples/mongobouncer.toml.example mongobouncer.toml
+cp examples/mongobouncer.example.toml mongobouncer.toml
 # Edit mongobouncer.toml with your MongoDB settings
 
 # 3. Run

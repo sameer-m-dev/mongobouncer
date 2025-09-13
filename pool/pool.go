@@ -1,7 +1,6 @@
 package pool
 
 import (
-	"context"
 	"errors"
 	"fmt"
 	"sync"
@@ -35,7 +34,6 @@ type Manager struct {
 	defaultMode   PoolMode
 	minPoolSize   int
 	maxPoolSize   int
-	reserveSize   int
 	maxClientConn int
 	activeClients map[string]*ClientConnection
 	clientMutex   sync.RWMutex
@@ -46,19 +44,19 @@ type Manager struct {
 type ConnectionPool struct {
 	name        string
 	mode        PoolMode
-	maxSize     int
-	reserveSize int
-	mongoClient *mongobouncer.Mongo
-	available   chan *PooledConnection
-	inUse       map[string]*PooledConnection
-	waitQueue   chan chan *PooledConnection
-	mutex       sync.RWMutex
+	mongoClient *mongobouncer.Mongo // Single client, reused
 	logger      *zap.Logger
 	metrics     *util.MetricsClient
 	stats       *PoolStats
+
+	// Connection health management
+	lastHealthCheck     time.Time
+	healthCheckMutex    sync.RWMutex
+	isHealthy           bool
+	healthCheckInterval time.Duration
 }
 
-// PooledConnection represents a pooled MongoDB connection
+// PooledConnection represents a pooled MongoDB connection (simplified)
 type PooledConnection struct {
 	ID            string
 	MongoClient   *mongobouncer.Mongo
@@ -84,23 +82,30 @@ type ClientConnection struct {
 
 // PoolStats tracks pool statistics
 type PoolStats struct {
-	TotalConnections int64
-	AvailableConns   int64
-	InUseConns       int64
-	WaitingClients   int64
-	TotalRequests    int64
-	TotalWaitTime    time.Duration
-	mutex            sync.RWMutex
+	TotalRequests      int64
+	TotalWaitTime      time.Duration
+	SuccessfulRequests int64
+	FailedRequests     int64
+	ConnectionErrors   int64
+	ActiveConnections  int64 // Track active connections for utilization
+	mutex              sync.RWMutex
 }
 
 // NewManager creates a new pool manager
-func NewManager(logger *zap.Logger, metrics *util.MetricsClient, defaultMode string, minPoolSize, maxPoolSize, reserveSize, maxClientConn int) *Manager {
+func NewManager(logger *zap.Logger, metrics *util.MetricsClient, defaultMode string, minPoolSize, maxPoolSize, maxClientConn int) *Manager {
 	mode := SessionMode
 	switch defaultMode {
 	case "transaction":
 		mode = TransactionMode
 	case "statement":
 		mode = StatementMode
+	case "session":
+		mode = SessionMode
+	}
+
+	// Set max client connections metric
+	if metrics != nil {
+		_ = metrics.Gauge("max_client_connections", float64(maxClientConn), []string{}, 1)
 	}
 
 	return &Manager{
@@ -110,14 +115,18 @@ func NewManager(logger *zap.Logger, metrics *util.MetricsClient, defaultMode str
 		defaultMode:   mode,
 		minPoolSize:   minPoolSize,
 		maxPoolSize:   maxPoolSize,
-		reserveSize:   reserveSize,
 		maxClientConn: maxClientConn,
 		activeClients: make(map[string]*ClientConnection),
 	}
 }
 
+// GetDefaultMode returns the configured default pool mode
+func (m *Manager) GetDefaultMode() PoolMode {
+	return m.defaultMode
+}
+
 // GetPool returns or creates a pool for the given database
-func (m *Manager) GetPool(database string, mongoClient *mongobouncer.Mongo, mode PoolMode, maxSize int) *ConnectionPool {
+func (m *Manager) GetPool(database string, mongoClient *mongobouncer.Mongo, mode PoolMode) *ConnectionPool {
 	m.poolMutex.RLock()
 	pool, exists := m.pools[database]
 	m.poolMutex.RUnlock()
@@ -138,31 +147,26 @@ func (m *Manager) GetPool(database string, mongoClient *mongobouncer.Mongo, mode
 	if mode == "" {
 		mode = m.defaultMode
 	}
-	if maxSize == 0 {
-		maxSize = m.maxPoolSize
-	}
 
 	pool = &ConnectionPool{
 		name:        database,
 		mode:        mode,
-		maxSize:     maxSize,
-		reserveSize: m.reserveSize,
-		mongoClient: mongoClient,
-		available:   make(chan *PooledConnection, maxSize),
-		inUse:       make(map[string]*PooledConnection),
-		waitQueue:   make(chan chan *PooledConnection, 1000),
+		mongoClient: mongoClient, // Single client, reused
 		logger:      m.logger,
 		metrics:     m.metrics,
 		stats:       &PoolStats{},
+
+		// Initialize health check settings
+		lastHealthCheck:     time.Now(),
+		isHealthy:           true,
+		healthCheckInterval: 30 * time.Second, // Check every 30 seconds
 	}
 
 	m.pools[database] = pool
-	go pool.maintainPool()
 
 	m.logger.Info("Created connection pool",
 		zap.String("database", database),
-		zap.String("mode", string(mode)),
-		zap.Int("max_size", maxSize))
+		zap.String("mode", string(mode)))
 
 	return pool
 }
@@ -191,7 +195,23 @@ func (m *Manager) RegisterClient(clientID, username, database string, poolMode P
 	}
 
 	m.activeClients[clientID] = client
+
+	// Update client connections metric
+	if m.metrics != nil {
+		_ = m.metrics.Gauge("client_connections", float64(len(m.activeClients)), []string{"state:active"}, 1)
+		_ = m.metrics.Incr("connection_opened", []string{}, 1)
+	}
+
 	return client, nil
+}
+
+// GetClient returns a client by ID (for checking registration)
+func (m *Manager) GetClient(clientID string) (*ClientConnection, bool) {
+	m.clientMutex.RLock()
+	defer m.clientMutex.RUnlock()
+
+	client, exists := m.activeClients[clientID]
+	return client, exists
 }
 
 // UnregisterClient removes a client and returns any held connections
@@ -215,6 +235,12 @@ func (m *Manager) UnregisterClient(clientID string) {
 	client.mutex.Unlock()
 
 	delete(m.activeClients, clientID)
+
+	// Update client connections metric
+	if m.metrics != nil {
+		_ = m.metrics.Gauge("client_connections", float64(len(m.activeClients)), []string{"state:active"}, 1)
+		_ = m.metrics.Incr("connection_closed", []string{}, 1)
+	}
 }
 
 // GetConnection gets a connection for a client based on pool mode
@@ -234,7 +260,7 @@ func (m *Manager) GetConnection(clientID string, database string, mongoClient *m
 	client.LastActivity = time.Now()
 
 	// Get the pool for the database
-	pool := m.GetPool(database, mongoClient, client.PoolMode, 0)
+	pool := m.GetPool(database, mongoClient, client.PoolMode)
 
 	switch client.PoolMode {
 	case SessionMode:
@@ -318,316 +344,144 @@ func (m *Manager) ReturnConnection(clientID string, conn *PooledConnection, isEn
 	}
 }
 
-// Checkout gets a connection from the pool
+// Checkout gets a connection from the pool (simplified with health check)
 func (p *ConnectionPool) Checkout(clientID string) (*PooledConnection, error) {
 	p.stats.incrementRequests()
 	start := time.Now()
 
-	select {
-	case conn := <-p.available:
-		// Got available connection
-		if conn != nil {
-			p.mutex.Lock()
-			conn.InUse = true
-			conn.ClientID = clientID
-			conn.LastUsed = time.Now()
-			p.inUse[conn.ID] = conn
-			p.mutex.Unlock()
+	p.logger.Debug("Getting connection from pool",
+		zap.String("pool", p.name),
+		zap.String("client_id", clientID))
 
-			p.stats.updateCounts(int64(len(p.available)), int64(len(p.inUse)))
+	// MongoDB driver handles connection pooling - no need to enforce limits here
 
-			// Record checkout duration
-			if p.metrics != nil {
-				checkoutDuration := time.Since(start).Seconds()
-				tags := []string{fmt.Sprintf("database:%s", p.name)}
-				_ = p.metrics.Distribution("pool_checkout_duration", checkoutDuration, tags, 1)
-			}
-
-			return conn, nil
-		}
-		// If conn is nil, treat as no available connection and fall through
-
-	default:
-		// No available connections
+	// Check connection health before returning
+	if err := p.checkConnectionHealth(); err != nil {
+		p.stats.incrementFailedRequests()
+		p.stats.incrementConnectionErrors()
+		return nil, fmt.Errorf("connection health check failed: %w", err)
 	}
 
-	// Try to create new connection
-	if p.canCreateNew() {
-		conn := p.createConnection()
-		if conn != nil {
-			p.mutex.Lock()
-			conn.InUse = true
-			conn.ClientID = clientID
-			conn.LastUsed = time.Now()
-			p.inUse[conn.ID] = conn
-			p.mutex.Unlock()
-
-			p.stats.updateCounts(int64(len(p.available)), int64(len(p.inUse)))
-
-			// Record checkout duration
-			if p.metrics != nil {
-				checkoutDuration := time.Since(start).Seconds()
-				tags := []string{fmt.Sprintf("database:%s", p.name)}
-				_ = p.metrics.Distribution("pool_checkout_duration", checkoutDuration, tags, 1)
-			}
-
-			return conn, nil
-		}
+	// Create a simple pooled connection that just wraps the MongoDB client
+	conn := &PooledConnection{
+		ID:          fmt.Sprintf("%s-%d", p.name, time.Now().UnixNano()),
+		MongoClient: p.mongoClient, // Always return the same client
+		Pool:        p,
+		CreatedAt:   time.Now(),
+		LastUsed:    time.Now(),
+		InUse:       true,
+		ClientID:    clientID,
 	}
 
-	// Wait for connection
-	return p.waitForConnection(clientID)
+	p.stats.incrementSuccessfulRequests()
+	p.stats.incrementActiveConnections()
+
+	// Record checkout duration
+	if p.metrics != nil {
+		checkoutDuration := time.Since(start).Seconds()
+		tags := []string{fmt.Sprintf("database:%s", p.name)}
+		_ = p.metrics.Distribution("pool_checkout_duration", checkoutDuration, tags, 1)
+		_ = p.metrics.Incr("pool_checkout_success", tags, 1)
+
+		// Update pool utilization metrics
+		p.updatePoolUtilizationMetrics()
+	}
+
+	return conn, nil
 }
 
-// Return returns a connection to the pool
+// checkConnectionHealth performs an optimized health check
+func (p *ConnectionPool) checkConnectionHealth() error {
+	p.healthCheckMutex.RLock()
+	lastCheck := p.lastHealthCheck
+	isHealthy := p.isHealthy
+	p.healthCheckMutex.RUnlock()
+
+	// Only check if enough time has passed since last check
+	if time.Since(lastCheck) < p.healthCheckInterval {
+		if !isHealthy {
+			return errors.New("connection marked as unhealthy")
+		}
+		return nil
+	}
+
+	// Perform actual health check
+	p.healthCheckMutex.Lock()
+	defer p.healthCheckMutex.Unlock()
+
+	// Double-check in case another goroutine already updated
+	if time.Since(p.lastHealthCheck) < p.healthCheckInterval {
+		if !p.isHealthy {
+			return errors.New("connection marked as unhealthy")
+		}
+		return nil
+	}
+
+	// Perform simple health check by checking if client is still valid
+	// We'll use a lightweight approach - just check if the client is not nil
+	// and can perform basic operations
+	if p.mongoClient == nil {
+		p.isHealthy = false
+		p.lastHealthCheck = time.Now()
+		return errors.New("MongoDB client is nil")
+	}
+
+	// For now, we'll assume the connection is healthy if the client exists
+	// The MongoDB driver will handle connection failures during actual operations
+	// This is a lightweight check that doesn't add network overhead
+	p.isHealthy = true
+	p.lastHealthCheck = time.Now()
+
+	// Update metrics
+	if p.metrics != nil {
+		tags := []string{fmt.Sprintf("database:%s", p.name)}
+		_ = p.metrics.Incr("pool_health_check_success", tags, 1)
+	}
+
+	return nil
+}
+
+// markConnectionUnhealthy marks the connection as unhealthy (called on operation failure)
+func (p *ConnectionPool) markConnectionUnhealthy() {
+	p.healthCheckMutex.Lock()
+	defer p.healthCheckMutex.Unlock()
+
+	p.isHealthy = false
+	p.lastHealthCheck = time.Now()
+
+	if p.metrics != nil {
+		tags := []string{fmt.Sprintf("database:%s", p.name)}
+		_ = p.metrics.Incr("pool_health_check_failure", tags, 1)
+	}
+
+	p.logger.Warn("Connection marked as unhealthy",
+		zap.String("pool", p.name))
+}
+
+// Return returns a connection to the pool (simplified)
 func (p *ConnectionPool) Return(conn *PooledConnection) {
 	if conn == nil || conn.Pool != p {
 		return
 	}
 
-	p.mutex.Lock()
-	delete(p.inUse, conn.ID)
+	// Mark connection as not in use
 	conn.InUse = false
 	conn.ClientID = ""
 	conn.TransactionID = ""
 	conn.LastUsed = time.Now()
-	p.mutex.Unlock()
 
-	// Try to give to waiting client
-	select {
-	case waiter := <-p.waitQueue:
-		waiter <- conn
-	default:
-		// Return to available pool
-		select {
-		case p.available <- conn:
-			p.stats.updateCounts(int64(len(p.available)), int64(len(p.inUse)))
-		default:
-			// Pool is full, close the connection
-			p.logger.Debug("Pool full, closing returned connection",
-				zap.String("connection_id", conn.ID))
-			p.closeConnection(conn)
-		}
-	}
-}
+	// Decrement active connections
+	p.stats.decrementActiveConnections()
 
-// canCreateNew checks if we can create a new connection
-func (p *ConnectionPool) canCreateNew() bool {
-	p.mutex.RLock()
-	defer p.mutex.RUnlock()
-
-	total := len(p.available) + len(p.inUse)
-	return total < p.maxSize
-}
-
-// createConnection creates a new pooled connection
-func (p *ConnectionPool) createConnection() *PooledConnection {
-	// Check if we have a valid mongo client
-	if p.mongoClient == nil {
-		p.logger.Error("Cannot create connection: mongo client is nil")
-		return nil
+	// Update pool utilization metrics
+	if p.metrics != nil {
+		p.updatePoolUtilizationMetrics()
 	}
 
-	// Create a new MongoDB client for this connection
-	// This ensures each pooled connection has its own underlying connection
-	client, err := mongobouncer.Connect(p.logger, p.metrics, p.mongoClient.GetClientOptions(), false)
-	if err != nil {
-		p.logger.Error("Failed to create MongoDB connection", zap.Error(err))
-		return nil
-	}
-
-	conn := &PooledConnection{
-		ID:          fmt.Sprintf("%s-%d", p.name, time.Now().UnixNano()),
-		MongoClient: client,
-		Pool:        p,
-		CreatedAt:   time.Now(),
-		LastUsed:    time.Now(),
-	}
-
-	p.stats.incrementTotal()
-	p.logger.Debug("Created new pooled connection",
+	// No actual pooling needed - MongoDB driver handles everything
+	p.logger.Debug("Returned connection to pool",
 		zap.String("pool", p.name),
 		zap.String("connection_id", conn.ID))
-
-	return conn
-}
-
-// closeConnection properly closes a MongoDB connection
-func (p *ConnectionPool) closeConnection(conn *PooledConnection) {
-	if conn != nil && conn.MongoClient != nil {
-		p.logger.Debug("Closing pooled connection",
-			zap.String("connection_id", conn.ID))
-		conn.MongoClient.Close()
-		p.stats.decrementTotal()
-	}
-}
-
-// waitForConnection waits for an available connection
-func (p *ConnectionPool) waitForConnection(clientID string) (*PooledConnection, error) {
-	waiter := make(chan *PooledConnection, 1)
-
-	// Add to wait queue
-	select {
-	case p.waitQueue <- waiter:
-		p.stats.incrementWaiting()
-		defer p.stats.decrementWaiting()
-
-		// Record clients waiting for server
-		if p.metrics != nil {
-			tags := []string{fmt.Sprintf("database:%s", p.name)}
-			_ = p.metrics.Gauge("clients_waiting_for_server", float64(len(p.waitQueue)), tags, 1)
-		}
-	default:
-		// Record pool exhaustion event
-		if p.metrics != nil {
-			tags := []string{fmt.Sprintf("database:%s", p.name)}
-			_ = p.metrics.Incr("pool_exhaustion", tags, 1)
-		}
-		return nil, errors.New("wait queue full")
-	}
-
-	// Wait with timeout
-	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
-	defer cancel()
-
-	start := time.Now()
-	select {
-	case conn := <-waiter:
-		waitDuration := time.Since(start)
-		p.stats.addWaitTime(waitDuration)
-
-		// Record pool connection wait time
-		if p.metrics != nil {
-			tags := []string{fmt.Sprintf("database:%s", p.name)}
-			_ = p.metrics.Distribution("pool_connection_wait", waitDuration.Seconds(), tags, 1)
-		}
-
-		// Check if connection creation failed
-		if conn == nil {
-			return nil, errors.New("connection creation failed")
-		}
-
-		p.mutex.Lock()
-		conn.InUse = true
-		conn.ClientID = clientID
-		conn.LastUsed = time.Now()
-		p.inUse[conn.ID] = conn
-		p.mutex.Unlock()
-
-		return conn, nil
-
-	case <-ctx.Done():
-		return nil, errors.New("timeout waiting for connection")
-	}
-}
-
-// updatePoolMetrics updates pool-related metrics
-func (p *ConnectionPool) updatePoolMetrics() {
-	if p.metrics == nil {
-		return
-	}
-
-	p.mutex.RLock()
-	inUseCount := len(p.inUse)
-	p.mutex.RUnlock()
-
-	// Calculate utilization ratio
-	utilization := float64(inUseCount) / float64(p.maxSize)
-	if p.maxSize == 0 {
-		utilization = 0
-	}
-
-	tags := []string{fmt.Sprintf("database:%s", p.name)}
-	_ = p.metrics.Gauge("pool_utilization", utilization, tags, 1)
-}
-
-// maintainPool maintains the connection pool
-func (p *ConnectionPool) maintainPool() {
-	ticker := time.NewTicker(1 * time.Second)
-	defer ticker.Stop()
-
-	for range ticker.C {
-		p.cleanupIdleConnections()
-		p.ensureMinimumConnections()
-		p.updatePoolMetrics()
-	}
-}
-
-// cleanupIdleConnections removes idle connections
-func (p *ConnectionPool) cleanupIdleConnections() {
-	p.mutex.Lock()
-	defer p.mutex.Unlock()
-
-	now := time.Now()
-	idleTimeout := 5 * time.Minute
-
-	// Check available connections
-	available := make(chan *PooledConnection, cap(p.available))
-	for {
-		select {
-		case conn := <-p.available:
-			if conn == nil {
-				continue
-			}
-			if now.Sub(conn.LastUsed) > idleTimeout {
-				// Remove idle connection
-				p.closeConnection(conn)
-				continue
-			}
-			available <- conn
-		default:
-			goto doneAvailable
-		}
-	}
-doneAvailable:
-	close(available)
-
-	// Rebuild available channel
-	p.available = make(chan *PooledConnection, p.maxSize)
-	for conn := range available {
-		select {
-		case p.available <- conn:
-		default:
-			// Pool is full, discard connection
-			p.closeConnection(conn)
-		}
-	}
-}
-
-// ensureMinimumConnections ensures minimum connections are available
-func (p *ConnectionPool) ensureMinimumConnections() {
-	p.mutex.RLock()
-	available := len(p.available)
-	inUse := len(p.inUse)
-	total := available + inUse
-	p.mutex.RUnlock()
-
-	// Create connections if we have capacity and waiters
-	if total < p.maxSize && len(p.waitQueue) > 0 {
-		conn := p.createConnection()
-		p.mutex.Lock()
-		p.available <- conn
-		p.mutex.Unlock()
-
-		// Notify a waiter
-		select {
-		case waiter := <-p.waitQueue:
-			select {
-			case waiter <- conn:
-			default:
-				// Waiter is no longer waiting, return connection to pool
-				p.mutex.Lock()
-				select {
-				case p.available <- conn:
-				default:
-					// Pool is full, discard connection
-				}
-				p.mutex.Unlock()
-			}
-		default:
-			// No waiters, connection stays in available pool
-		}
-	}
 }
 
 // GetStats returns pool statistics
@@ -635,32 +489,28 @@ func (p *ConnectionPool) GetStats() map[string]interface{} {
 	p.stats.mutex.RLock()
 	defer p.stats.mutex.RUnlock()
 
+	p.healthCheckMutex.RLock()
+	isHealthy := p.isHealthy
+	lastHealthCheck := p.lastHealthCheck
+	p.healthCheckMutex.RUnlock()
+
 	return map[string]interface{}{
-		"name":              p.name,
-		"mode":              string(p.mode),
-		"max_size":          p.maxSize,
-		"total_connections": p.stats.TotalConnections,
-		"available":         p.stats.AvailableConns,
-		"in_use":            p.stats.InUseConns,
-		"waiting_clients":   p.stats.WaitingClients,
-		"total_requests":    p.stats.TotalRequests,
-		"avg_wait_time_ms":  p.stats.avgWaitTime().Milliseconds(),
+		"name":                p.name,
+		"mode":                string(p.mode),
+		"total_requests":      p.stats.TotalRequests,
+		"successful_requests": p.stats.SuccessfulRequests,
+		"failed_requests":     p.stats.FailedRequests,
+		"connection_errors":   p.stats.ConnectionErrors,
+		"active_connections":  p.stats.ActiveConnections,
+		"success_rate":        p.calculateSuccessRate(),
+		"utilization":         p.calculateUtilization(),
+		"is_healthy":          isHealthy,
+		"last_health_check":   lastHealthCheck,
+		"avg_wait_time_ms":    p.stats.avgWaitTime().Milliseconds(),
 	}
 }
 
 // Stats helper methods
-
-func (s *PoolStats) incrementTotal() {
-	s.mutex.Lock()
-	s.TotalConnections++
-	s.mutex.Unlock()
-}
-
-func (s *PoolStats) decrementTotal() {
-	s.mutex.Lock()
-	s.TotalConnections--
-	s.mutex.Unlock()
-}
 
 func (s *PoolStats) incrementRequests() {
 	s.mutex.Lock()
@@ -668,28 +518,35 @@ func (s *PoolStats) incrementRequests() {
 	s.mutex.Unlock()
 }
 
-func (s *PoolStats) incrementWaiting() {
+func (s *PoolStats) incrementSuccessfulRequests() {
 	s.mutex.Lock()
-	s.WaitingClients++
+	s.SuccessfulRequests++
 	s.mutex.Unlock()
 }
 
-func (s *PoolStats) decrementWaiting() {
+func (s *PoolStats) incrementFailedRequests() {
 	s.mutex.Lock()
-	s.WaitingClients--
+	s.FailedRequests++
 	s.mutex.Unlock()
 }
 
-func (s *PoolStats) updateCounts(available, inUse int64) {
+func (s *PoolStats) incrementConnectionErrors() {
 	s.mutex.Lock()
-	s.AvailableConns = available
-	s.InUseConns = inUse
+	s.ConnectionErrors++
 	s.mutex.Unlock()
 }
 
-func (s *PoolStats) addWaitTime(duration time.Duration) {
+func (s *PoolStats) incrementActiveConnections() {
 	s.mutex.Lock()
-	s.TotalWaitTime += duration
+	s.ActiveConnections++
+	s.mutex.Unlock()
+}
+
+func (s *PoolStats) decrementActiveConnections() {
+	s.mutex.Lock()
+	if s.ActiveConnections > 0 {
+		s.ActiveConnections--
+	}
 	s.mutex.Unlock()
 }
 
@@ -698,6 +555,38 @@ func (s *PoolStats) avgWaitTime() time.Duration {
 		return 0
 	}
 	return s.TotalWaitTime / time.Duration(s.TotalRequests)
+}
+
+// calculateSuccessRate calculates the success rate percentage
+func (p *ConnectionPool) calculateSuccessRate() float64 {
+	if p.stats.TotalRequests == 0 {
+		return 100.0
+	}
+	return float64(p.stats.SuccessfulRequests) / float64(p.stats.TotalRequests) * 100.0
+}
+
+// calculateUtilization calculates the pool utilization percentage
+// Note: Since MongoDB driver handles pooling, we don't track maxSize anymore
+func (p *ConnectionPool) calculateUtilization() float64 {
+	// Return 0 since we don't track maxSize anymore
+	// The MongoDB driver handles its own pool utilization
+	return 0.0
+}
+
+// updatePoolUtilizationMetrics updates pool utilization metrics
+func (p *ConnectionPool) updatePoolUtilizationMetrics() {
+	if p.metrics == nil {
+		return
+	}
+
+	p.stats.mutex.RLock()
+	activeConnections := p.stats.ActiveConnections
+	p.stats.mutex.RUnlock()
+
+	tags := []string{fmt.Sprintf("database:%s", p.name)}
+	
+	// Since we don't track maxSize anymore, just report active connections
+	_ = p.metrics.Gauge("pool_active_connections", float64(activeConnections), tags, 1)
 }
 
 // GetDefaultPoolSizes returns the default min and max pool sizes

@@ -69,7 +69,7 @@ metrics_enabled = true  # Enable Prometheus metrics collection
 - `proxy/proxy.go` - Updated proxy metrics
 - `proxy/connection.go` - Updated connection metrics
 - `README.md` - Updated documentation
-- `examples/mongobouncer.toml.example` - Updated configuration example
+- `examples/mongobouncer.example.toml` - Updated configuration example
 
 **Files Created:**
 - `util/metrics.go` - New Prometheus implementation

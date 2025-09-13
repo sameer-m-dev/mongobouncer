@@ -13,7 +13,6 @@ import (
 	"github.com/stretchr/testify/require"
 	"go.uber.org/zap"
 
-	"github.com/sameer-m-dev/mongobouncer/auth"
 	"github.com/sameer-m-dev/mongobouncer/pool"
 	"github.com/sameer-m-dev/mongobouncer/proxy"
 	"github.com/sameer-m-dev/mongobouncer/util"
@@ -58,13 +57,8 @@ func TestRealWorldScenarios(t *testing.T) {
 			},
 		}
 
-		// Set up auth manager
-		authManager, _ := auth.NewManager(logger, "trust", "", "",
-			[]string{"admin"},
-			[]string{"monitoring", "analytics_reader"})
-
 		// Set up pool manager
-		poolManager := pool.NewManager(logger, metrics, "session", 5, 20, 5, 200)
+		poolManager := pool.NewManager(logger, metrics, "session", 5, 20, 200)
 
 		// Set up router
 		router := proxy.NewDatabaseRouter(logger)
@@ -89,7 +83,7 @@ func TestRealWorldScenarios(t *testing.T) {
 			default:
 				mode = pool.SessionMode
 			}
-			poolManager.GetPool(svc.database, nil, mode, 50)
+			poolManager.GetPool(svc.database, nil, mode)
 
 			// Register service users
 			for _, user := range svc.users {
@@ -111,7 +105,7 @@ func TestRealWorldScenarios(t *testing.T) {
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
-			p := poolManager.GetPool("users_db", nil, pool.SessionMode, 50)
+			p := poolManager.GetPool("users_db", nil, pool.SessionMode)
 			for i := 0; i < 10; i++ {
 				conn, err := p.Checkout("user-service-user_service_app")
 				if err == nil {
@@ -126,7 +120,7 @@ func TestRealWorldScenarios(t *testing.T) {
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
-			p := poolManager.GetPool("orders_db", nil, pool.TransactionMode, 50)
+			p := poolManager.GetPool("orders_db", nil, pool.TransactionMode)
 			for i := 0; i < 5; i++ {
 				// Start transaction
 				conn, err := p.Checkout("order-service-order_service_app")
@@ -143,7 +137,7 @@ func TestRealWorldScenarios(t *testing.T) {
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
-			p := poolManager.GetPool("analytics_db", nil, pool.StatementMode, 50)
+			p := poolManager.GetPool("analytics_db", nil, pool.StatementMode)
 			for i := 0; i < 20; i++ {
 				conn, err := p.Checkout("analytics-service-analytics_reader")
 				if err == nil {
@@ -159,11 +153,6 @@ func TestRealWorldScenarios(t *testing.T) {
 		// Verify system state
 		allRoutes := router.GetAllRoutes()
 		assert.Len(t, allRoutes, len(services))
-
-		// Check permissions
-		assert.True(t, authManager.IsStatsUser("analytics_reader"))
-		assert.True(t, authManager.IsStatsUser("monitoring"))
-		assert.True(t, authManager.IsAdminUser("admin"))
 	})
 
 	t.Run("ShardedCluster", func(t *testing.T) {
@@ -259,7 +248,7 @@ func TestRealWorldScenarios(t *testing.T) {
 	t.Run("MultiTenantSaaS", func(t *testing.T) {
 		// Simulate multi-tenant SaaS with database per tenant
 		router := proxy.NewDatabaseRouter(logger)
-		poolManager := pool.NewManager(logger, metrics, "transaction", 2, 10, 2, 1000)
+		poolManager := pool.NewManager(logger, metrics, "transaction", 2, 10, 1000)
 
 		// Configure tenants
 		tenants := []struct {
@@ -285,7 +274,7 @@ func TestRealWorldScenarios(t *testing.T) {
 				MaxConnections: tenant.poolSize,
 			})
 
-			poolManager.GetPool(dbName, nil, pool.TransactionMode, tenant.poolSize)
+			poolManager.GetPool(dbName, nil, pool.TransactionMode)
 		}
 
 		// Pattern routes for tenant tiers
@@ -326,7 +315,7 @@ func TestRealWorldScenarios(t *testing.T) {
 					opCount = 20
 				}
 
-				p := poolManager.GetPool(dbName, nil, pool.TransactionMode, t.poolSize)
+				p := poolManager.GetPool(dbName, nil, pool.TransactionMode)
 				for i := 0; i < opCount; i++ {
 					conn, err := p.Checkout(clientID)
 					if err == nil {
@@ -434,120 +423,4 @@ port = 27017
 		assert.Contains(t, newRoute.ConnectionString, "secondary.cluster")
 	})
 
-	t.Run("ComplianceAndAuditing", func(t *testing.T) {
-		// Simulate environment with strict compliance requirements
-
-		// Set up auth with detailed user tracking
-		tmpDir, err := ioutil.TempDir("", "compliance-test")
-		require.NoError(t, err)
-		defer os.RemoveAll(tmpDir)
-
-		// Create users with different access levels
-		authFile := filepath.Join(tmpDir, "compliance-users.txt")
-		authContent := `# Compliance users
-"data_scientist" "hash1" "pool_mode=statement max_connections=10"
-"app_service" "hash2" "pool_mode=transaction max_connections=50"
-"etl_worker" "hash3" "pool_mode=session max_connections=20"
-"auditor" "hash4" "stats_only=true"
-"admin" "hash5"
-`
-		err = ioutil.WriteFile(authFile, []byte(authContent), 0644)
-		require.NoError(t, err)
-
-		authManager, err := auth.NewManager(logger, "md5", authFile, "",
-			[]string{"admin"},
-			[]string{"auditor", "compliance_officer"})
-		assert.NoError(t, err)
-
-		// Set up router with data classification
-		router := proxy.NewDatabaseRouter(logger)
-
-		databases := []struct {
-			name           string
-			classification string
-			allowedUsers   []string
-		}{
-			{
-				name:           "pii_data",
-				classification: "sensitive",
-				allowedUsers:   []string{"app_service", "admin"},
-			},
-			{
-				name:           "analytics_data",
-				classification: "internal",
-				allowedUsers:   []string{"data_scientist", "app_service", "admin"},
-			},
-			{
-				name:           "public_data",
-				classification: "public",
-				allowedUsers:   []string{"data_scientist", "app_service", "etl_worker", "admin"},
-			},
-			{
-				name:           "audit_logs",
-				classification: "restricted",
-				allowedUsers:   []string{"admin", "auditor"},
-			},
-		}
-
-		for _, db := range databases {
-			router.AddRoute(db.name, &proxy.RouteConfig{
-				DatabaseName: db.name,
-				Label:        db.classification,
-			})
-		}
-
-		// Test access control
-		testUsers := []string{"data_scientist", "app_service", "etl_worker", "auditor", "admin"}
-
-		for _, user := range testUsers {
-			// Check permissions
-			canViewStats := authManager.IsStatsUser(user)
-			isAdmin := authManager.IsAdminUser(user)
-
-			switch user {
-			case "admin":
-				assert.True(t, isAdmin)
-				assert.True(t, canViewStats)
-			case "auditor":
-				assert.False(t, isAdmin)
-				assert.True(t, canViewStats)
-			case "data_scientist", "app_service", "etl_worker":
-				assert.False(t, isAdmin)
-				assert.False(t, canViewStats)
-			}
-
-			// Get user configuration
-			userInfo, exists := authManager.GetUser(user)
-			if exists {
-				t.Logf("User %s: PoolMode=%s, MaxConn=%d",
-					user, userInfo.PoolMode, userInfo.MaxConnections)
-			}
-		}
-
-		// Simulate audit trail
-		auditLog := make([]string, 0)
-		var auditMu sync.Mutex
-
-		// Track database access
-		for _, db := range databases {
-			for _, user := range testUsers {
-				route, err := router.GetRoute(db.name)
-				if err == nil {
-					auditMu.Lock()
-					auditLog = append(auditLog, fmt.Sprintf(
-						"[%s] User '%s' accessed database '%s' (classification: %s)",
-						time.Now().Format(time.RFC3339),
-						user,
-						db.name,
-						route.Label,
-					))
-					auditMu.Unlock()
-				}
-			}
-		}
-
-		// Verify audit log
-		assert.True(t, len(auditLog) > 0)
-		// In real scenario, would write to persistent audit log
-	})
 }

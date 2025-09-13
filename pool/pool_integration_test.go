@@ -311,7 +311,7 @@ func TestPoolManagerIntegration(t *testing.T) {
 		stats := pool.GetStats()
 		assert.Equal(t, "stats", stats["name"])
 		assert.Equal(t, "session", stats["mode"])
-		assert.Equal(t, 10, stats["max_size"])
+		assert.Equal(t, 5, stats["max_size"])
 		assert.Equal(t, int64(0), stats["total_requests"])
 
 		// Generate activity
@@ -337,10 +337,11 @@ func TestPoolManagerIntegration(t *testing.T) {
 		assert.Equal(t, int64(3), stats["available"])
 
 		// Test wait time tracking
-		// Fill the pool
-		for i := 5; i < 10; i++ {
-			_, err := pool.Checkout(fmt.Sprintf("client%d", i))
+		// Fill the pool (5 connections)
+		for i := 0; i < 5; i++ {
+			conn, err := pool.Checkout(fmt.Sprintf("client%d", i))
 			assert.NoError(t, err)
+			conns[i] = conn
 		}
 
 		// This should wait
@@ -353,7 +354,7 @@ func TestPoolManagerIntegration(t *testing.T) {
 		}()
 
 		time.Sleep(50 * time.Millisecond)
-		pool.Return(conns[3]) // Release one
+		pool.Return(conns[0]) // Release one
 
 		<-done
 

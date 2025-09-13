@@ -37,6 +37,34 @@ go install github.com/sameer-m-dev/mongobouncer
 
 `mongobouncer` uses TOML-based configuration for comprehensive setup and management. The configuration system provides fine-grained control over connection pooling, authentication, monitoring, and database routing.
 
+**⚠️ Important: Database Configuration Format**
+
+Database configurations support **two methods**:
+
+**✅ Method 1: Connection String (Preferred):**
+```toml
+[databases]
+app_db = { connection_string = "mongodb://localhost:27017/myapp" }
+analytics = { connection_string = "mongodb://analytics-cluster:27017/analytics?replicaSet=rs0" }
+```
+
+**✅ Method 2: Individual Fields (Fallback):**
+```toml
+[databases]
+[databases.local_db]
+host = "localhost"
+port = 27017
+dbname = "myapp"
+max_pool_size = 20
+min_pool_size = 5
+```
+
+**❌ Incorrect Format (Will Cause Error):**
+```toml
+[databases]
+app_db = "mongodb://localhost:27017/myapp"  # ❌ Simple string format not supported
+```
+
 **Basic Usage:**
 ```bash
 ./mongobouncer -config mongobouncer.toml [-verbose]
@@ -69,11 +97,11 @@ address = "0.0.0.0:9090"
 enabled = true
 
 [databases]
-app_db = "mongodb://localhost:27017/myapp"
-analytics = "mongodb://analytics-cluster:27017/analytics?replicaSet=rs0"
+app_db = { connection_string = "mongodb://localhost:27017/myapp" }
+analytics = { connection_string = "mongodb://analytics-cluster:27017/analytics?replicaSet=rs0" }
 ```
 
-See [mongobouncer.toml.example](examples/mongobouncer.toml.example) for a comprehensive configuration with all available options including TLS, authentication, and advanced pool management settings.
+See [mongobouncer.example.toml](examples/mongobouncer.example.toml) for a comprehensive configuration with all available options including TLS, authentication, and advanced pool management settings.
 
 **Advanced Configuration Examples:**
 
@@ -81,12 +109,12 @@ See [mongobouncer.toml.example](examples/mongobouncer.toml.example) for a compre
 ```toml
 [databases]
 # Production sharded clusters
-users = "mongodb://user-cluster:27017/users?replicaSet=users-rs&maxPoolSize=50"
-products = "mongodb://product-cluster:27017/products?replicaSet=products-rs&maxPoolSize=30" 
-orders = "mongodb://order-cluster:27017/orders?replicaSet=orders-rs&maxPoolSize=40"
+users = { connection_string = "mongodb://user-cluster:27017/users?replicaSet=users-rs&maxPoolSize=50" }
+products = { connection_string = "mongodb://product-cluster:27017/products?replicaSet=products-rs&maxPoolSize=30" }
+orders = { connection_string = "mongodb://order-cluster:27017/orders?replicaSet=orders-rs&maxPoolSize=40" }
 
 # Analytics read replicas
-analytics = "mongodb://analytics-cluster:27017/analytics?readPreference=secondary&maxPoolSize=20"
+analytics = { connection_string = "mongodb://analytics-cluster:27017/analytics?readPreference=secondary&maxPoolSize=20" }
 ```
 
 *Connection Pool Modes:*
@@ -98,23 +126,23 @@ analytics = "mongodb://analytics-cluster:27017/analytics?readPreference=secondar
 ```toml
 [databases]
 # Exact match - specific database
-myapp_prod = "mongodb://prod-cluster:27017/myapp_prod"
+myapp_prod = { connection_string = "mongodb://prod-cluster:27017/myapp_prod" }
 
 # Wildcard patterns - match multiple databases
 # Prefix wildcard: matches databases starting with "analytics_"
-analytics_* = "mongodb://analytics-cluster:27017/analytics"
+analytics_* = { connection_string = "mongodb://analytics-cluster:27017/analytics" }
 
 # Suffix wildcard: matches databases ending with "_test"  
-*_test = "mongodb://test-cluster:27017/test"
+*_test = { connection_string = "mongodb://test-cluster:27017/test" }
 
 # Contains wildcard: matches databases containing "staging"
-*staging* = "mongodb://staging-cluster:27017/staging"
+*staging* = { connection_string = "mongodb://staging-cluster:27017/staging" }
 
 # Complex wildcard: matches patterns like "analytics_tenant_v2"
-analytics_*_v2 = "mongodb://analytics-v2-cluster:27017/analytics_v2"
+analytics_*_v2 = { connection_string = "mongodb://analytics-v2-cluster:27017/analytics_v2" }
 
 # Catch-all wildcard: matches any database not matched above
-* = "mongodb://default-cluster:27017/default"
+* = { connection_string = "mongodb://default-cluster:27017/default" }
 ```
 
 **Wildcard Database Routing:**
@@ -219,6 +247,14 @@ This project is licensed under the Apache License 2.0 - see the [LICENSE](LICENS
 
 ### Original Attribution
 This project builds upon and extends [mongobetween](https://github.com/coinbase/mongobetween) by Coinbase, which is also licensed under Apache License 2.0. We acknowledge and thank the original contributors for their foundational work.
+
+## Documentation
+
+- [Comprehensive Tests](./docs/COMPREHENSIVE_TESTS.md) - Detailed testing documentation
+- [Prometheus Migration](./docs/PROMETHEUS_MIGRATION.md) - Metrics migration guide
+- [Test Cleanup Report](./docs/TEST_CLEANUP_REPORT.md) - Test cleanup documentation
+- [Host-Based Admin Routing](./docs/HOST_BASED_ADMIN_ROUTING.md) - Admin routing guide
+- [Connection Pool Architecture](./docs/CONNECTION_POOL_ARCHITECTURE.md) - Complete connection pooling architecture, fixes, and optimization guide
 
 ## Contributing
 

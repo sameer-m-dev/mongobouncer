@@ -8,318 +8,94 @@
 # =====================================
 listen_addr = "0.0.0.0"
 listen_port = 27017
-unix_socket_path = ""  # Optional: "/tmp/mongobouncer.sock"
-
-# Multiple listen addresses (optional)
-# listen_addresses = ["0.0.0.0:27017", "127.0.0.1:27018"]
 
 # =====================================
 # Logging & Debugging
 # =====================================
 log_level = "info"  # debug, info, warn, error
 logfile = ""  # Empty means stdout, or specify path: "/var/log/mongobouncer.log"
-pidfile = "/var/run/mongobouncer.pid"
-log_connections = true  # Log new connections
-log_disconnections = true  # Log connection closures
-log_pooler_errors = true  # Log internal pooler errors
-verbose = false  # Extra verbose logging (debug mode)
-
-# =====================================
-# Authentication & Security
-# =====================================
-auth_type = "trust"  # trust, md5, scram-sha-256, cert, ldap
-auth_file = "users.txt.example"  # Path to user authentication file
-auth_query = ""  # Optional: MongoDB query for user authentication
-auth_user = ""  # Username for auth_query
-ignore_startup_parameters = ["extra_float_digits"]
-
-# Admin interface
-admin_users = ["admin", "monitor"]
-stats_users = ["stats", "monitor"]
-
-# IP Access Control
-# client_ip_filter = ["192.168.1.0/24", "10.0.0.0/8"]  # Allowed IP ranges
-# client_ip_blacklist = ["192.168.1.100"]  # Blocked IPs
 
 # =====================================
 # Connection Pooling & Performance
 # =====================================
-pool_mode = "session"  # session, transaction, statement
-min_pool_size = 5      # Minimum connections per database
-max_pool_size = 20     # Maximum connections per database
-reserve_pool_size = 5  # Reserved connections for emergencies
+pool_mode = "statement"  # session, transaction, statement
+max_pool_size = 20                    # MongoDB driver's internal pool size
+min_pool_size = 3                     # MongoDB driver's minimum pool size
 max_client_conn = 100  # Maximum client connections (0 = unlimited)
-max_db_connections = 0  # 0 = unlimited database connections
-max_user_connections = 0  # 0 = unlimited per user
-
-# Pool management
-# pool_size = 20  # Legacy alias for max_pool_size (deprecated)
-# min_pool_size = 5  # Minimum pool size (now configured above)
-server_reset_query = ""  # Query to reset server state
-server_reset_query_always = false  # Always run reset query
-
-# =====================================
-# Timeouts & Connection Management
-# =====================================
-server_idle_timeout = 600  # Idle server connection timeout (seconds)
-server_lifetime = 3600  # Maximum server connection lifetime
-server_connect_timeout = 15  # Server connection timeout
-server_login_retry = 15  # Retry interval for server login
-query_timeout = 0  # 0 means no timeout
-query_wait_timeout = 120  # Time to wait for connection from pool
-client_idle_timeout = 0  # 0 = no timeout for client connections
-client_login_timeout = 60  # Client login timeout
-dns_max_ttl = 15  # DNS cache TTL
-dns_nxdomain_ttl = 15  # DNS negative cache TTL
-
-# Connection health checks
-server_check_query = "{ isMaster: 1 }"  # MongoDB health check command
-server_check_delay = 30  # Health check interval (seconds)
-
-# =====================================
-# TLS/SSL Configuration
-# =====================================
-[mongobouncer.tls]
-enabled = false  # Enable TLS for client connections
-cert_file = ""  # Path to TLS certificate
-key_file = ""  # Path to TLS private key
-ca_file = ""  # Path to Certificate Authority file
-cipher_list = "HIGH:!aNULL:!eNULL:!EXPORT:!DES:!RC4:!MD5:!PSK:!SRP:!CAMELLIA"
-min_protocol_version = "TLSv1.2"
-max_protocol_version = ""  # Empty = no limit
-
-# Client certificate verification
-verify_client = false  # Require client certificates
-crl_file = ""  # Certificate Revocation List
-
-# =====================================
-# MongoDB-Specific Settings
-# =====================================
-[mongobouncer.mongodb]
-default_read_preference = "primary"  # primary, secondary, primaryPreferred, secondaryPreferred, nearest
-default_write_concern = "majority"  # majority, 1, 2, etc.
-default_read_concern = "local"  # local, available, majority, linearizable, snapshot
-max_bson_object_size = 16777216  # 16MB default BSON limit
-enable_retryable_writes = true  # Enable retryable writes
-enable_retryable_reads = true  # Enable retryable reads
-
-# Connection string options (applied to all connections unless overridden)
-default_connection_options = "maxPoolSize=50&minPoolSize=5&maxIdleTimeMS=300000&socketTimeoutMS=5000&connectTimeoutMS=10000"
+max_conn_idle_time = "30s"            # How long to keep idle connections
+server_selection_timeout = "5s"        # Server selection timeout
+connect_timeout = "5s"                # Connection establishment timeout
+socket_timeout = "30s"                # Socket operation timeout
+heartbeat_interval = "10s"            # Heartbeat frequency
+ping = true
 
 # =====================================
 # Metrics & Monitoring (Prometheus)
 # =====================================
-[mongobouncer.metrics]
-enabled = true  # Enable Prometheus metrics collection
-address = "localhost:9090"  # Prometheus metrics endpoint address
-path = "/metrics"  # Metrics endpoint path
-update_interval = 15  # Metrics update interval (seconds)
-
-# Health check endpoint
-health_check_enabled = true  # Enable /health endpoint
-health_check_path = "/health"  # Health check endpoint path
-
-# Additional metrics
-detailed_pool_stats = true  # Include detailed connection pool statistics
-connection_histogram = true  # Enable connection duration histograms
-query_histogram = true  # Enable query duration histograms
+metrics_address = "localhost:9090"
+metrics_enabled = true
 
 # =====================================
-# Performance Tuning
+# Network Settings
 # =====================================
-[mongobouncer.performance]
-tcp_keepalive = true  # Enable TCP keepalive
-tcp_keepalive_idle = 600  # TCP keepalive idle time
-tcp_keepalive_interval = 30  # TCP keepalive probe interval
-tcp_keepalive_count = 3  # TCP keepalive probe count
-
-# Buffer sizes
-listen_backlog = 128  # Listen socket backlog
-sbuf_lookahead = 8192  # Socket buffer lookahead size
-max_packet_size = 2147483647  # Maximum packet size (2GB)
-pkt_buf = 4096  # Packet buffer size
-
-# Performance options
-so_reuseport = false  # Enable SO_REUSEPORT (Linux)
-disable_pqexec = false  # Disable simple query protocol
+network = "tcp4"  # tcp4, tcp6, unix
+unlink = false    # Remove unix socket file on exit
 
 # =====================================
 # Database Configurations
 # =====================================
 [databases]
 # Multiple configuration formats supported:
-# 1. Simple connection string
-# 2. Individual parameter settings
+# 1. Structured format with connection_string (PREFERRED)
+#    - Full MongoDB URI support (replica sets, SSL, auth, etc.)
+#    - Environment variables: ${USER}:${PASS}@host
+#    - Complex configurations (sharded clusters, Atlas)
+# 2. Individual parameter settings (host, port, dbname, etc.)
+#    - Simple configurations for basic setups
+#    - Clear separation of connection vs. pool settings
+#    - No connection_string field needed
 # 3. Environment variable substitution
 
 # Example 1: Production MongoDB Atlas cluster (connection string)
-production_app = "mongodb+srv://${PROD_USER}:${PROD_PASS}@production-cluster.mongodb.net/myapp?retryWrites=true&w=majority&maxPoolSize=100&minPoolSize=10"
+production_app = { connection_string = "mongodb+srv://${PROD_USER}:${PROD_PASS}@production-cluster.mongodb.net/myapp?retryWrites=true&w=majority&maxPoolSize=100&minPoolSize=10" }
 
 # Example 2: Analytics database (individual settings)
 [databases.analytics_db]
-host = "analytics-cluster.mongodb.net"
-port = 27017
-dbname = "analytics"
-user = "analytics_user"
-password = "${ANALYTICS_PASSWORD}"  # Environment variable
-auth_db = "admin"
-pool_mode = "transaction"  # Override global pool mode
-pool_size = 50
-min_pool_size = 10
-max_db_connections = 100
-read_preference = "secondaryPreferred"  # Read from secondary when possible
-write_concern = "majority"
-read_concern = "majority"
-label = "analytics"
-connection_options = "maxIdleTimeMS=300000&socketTimeoutMS=5000"
+connection_string = "mongodb://analytics-cluster.mongodb.net:27017/analytics"
+max_pool_size = 50                    # Override default for high-traffic database
+min_pool_size = 10                    # Override default
+socket_timeout = "60s"                # Longer timeout for this DB
 
-# Example 3: Local development database
+# Example 3: Local development database (using individual fields)
 [databases.local_dev]
 host = "localhost"
 port = 27017
 dbname = "development"
-user = ""  # No authentication for local dev
-password = ""
-pool_mode = "session"
-pool_size = 10
+max_pool_size = 10
 min_pool_size = 2
-max_db_connections = 20
-label = "dev"
 
-# Example 4: Replica set configuration
-[databases.replica_cluster]
-hosts = ["mongo1.example.com:27017", "mongo2.example.com:27017", "mongo3.example.com:27017"]
-dbname = "clustered_app"
-user = "app_user"
-password = "${CLUSTER_PASSWORD}"
-auth_db = "admin"
-replica_set = "rs0"
-pool_mode = "session"
-pool_size = 30
-read_preference = "primaryPreferred"
-write_concern = "majority"
-read_concern = "majority"
-label = "cluster"
+# Example 3b: Another database using individual fields (no connection_string needed)
+[databases.test_db]
+host = "localhost"
+port = 27019
+dbname = "test_database"
+user = "testuser"
+password = "testpass"
+max_pool_size = 15
+min_pool_size = 5
+socket_timeout = "60s"
 
-# Example 5: Sharded cluster
-[databases.sharded_cluster]
-hosts = ["mongos1.example.com:27017", "mongos2.example.com:27017"]
-dbname = "sharded_app"
-user = "shard_user"
-password = "${SHARD_PASSWORD}"
-auth_db = "admin"
-pool_mode = "session"
-pool_size = 40
-max_db_connections = 80
-read_preference = "nearest"
-label = "shard"
-
-# Example 6: Read-only reporting database
-[databases.reporting]
-host = "reporting-replica.mongodb.net"
-port = 27017
-dbname = "reports"
-user = "readonly_user"
-password = "${REPORTING_PASSWORD}"
-auth_db = "admin"
-pool_mode = "statement"  # Most restrictive for read-only
-pool_size = 15
-read_preference = "secondary"  # Always read from secondary
-read_concern = "available"  # Fastest read concern for reports
-allow_writes = false  # Explicitly disable writes
-label = "reporting"
-
-# Example 7: MongoDB with SSL/TLS
-[databases.secure_db]
-host = "secure-cluster.mongodb.net"
-port = 27017
-dbname = "secure_app"
-user = "secure_user"
-password = "${SECURE_PASSWORD}"
-auth_db = "admin"
-pool_mode = "transaction"
-pool_size = 25
-ssl = true
-ssl_ca_file = "/etc/ssl/certs/mongodb-ca.pem"
-ssl_cert_file = "/etc/ssl/certs/mongodb-client.pem"
-ssl_key_file = "/etc/ssl/private/mongodb-client-key.pem"
-ssl_verify = true
-label = "secure"
-
-# Wildcard Database Support
-# Wildcard databases allow dynamic routing based on database name patterns
-# Precedence: exact match → wildcard match → error
-# 
-# Example 8: Exact match - specific database
-[databases.myapp_prod]
-host = "prod-cluster.mongodb.net"
-port = 27017
-dbname = "myapp_prod"
-user = "prod_user"
-password = "${PROD_PASSWORD}"
-pool_mode = "session"
-pool_size = 50
-label = "prod-exact"
-
-# Example 9: Wildcard patterns - match multiple databases
-# Prefix wildcard: matches databases starting with "analytics_"
-[databases.analytics_*]
-host = "analytics-cluster.mongodb.net"
-port = 27017
-dbname = "analytics"  # Base database name
-user = "analytics_user"
-password = "${ANALYTICS_PASSWORD}"
+# Example 5: Wildcard database patterns (using quotes for special characters)
+[databases."analytics_*"]
+connection_string = "mongodb://analytics-cluster.mongodb.net:27017/analytics"
+max_pool_size = 30
 pool_mode = "statement"
-pool_size = 30
-label = "analytics-wildcard"
-
-# Suffix wildcard: matches databases ending with "_test"
-[databases.*_test]
-host = "test-cluster.mongodb.net"
-port = 27017
-dbname = "test"
-user = "test_user"
-password = "${TEST_PASSWORD}"
-pool_mode = "session"
-pool_size = 20
-label = "test-wildcard"
-
-# Contains wildcard: matches databases containing "staging"
-[databases.*staging*]
-host = "staging-cluster.mongodb.net"
-port = 27017
-dbname = "staging"
-user = "staging_user"
-password = "${STAGING_PASSWORD}"
-pool_mode = "session"
-pool_size = 15
-label = "staging-wildcard"
-
-# Complex wildcard: matches patterns like "analytics_tenant_v2"
-[databases.analytics_*_v2]
-host = "analytics-v2-cluster.mongodb.net"
-port = 27017
-dbname = "analytics_v2"
-user = "analytics_v2_user"
-password = "${ANALYTICS_V2_PASSWORD}"
-pool_mode = "transaction"
-pool_size = 25
-label = "analytics-v2"
 
 # Catch-all wildcard: matches any database not matched above
-[databases.*]
-host = "${DEFAULT_MONGO_HOST:-localhost}"
-port = 27017
-dbname = "*"  # Use database name from client connection
-user = "${DEFAULT_MONGO_USER}"
-password = "${DEFAULT_MONGO_PASSWORD}"
-auth_db = "admin"
-pool_mode = "session"
-pool_size = 20
+[databases."*"]
+connection_string = "mongodb://${DEFAULT_MONGO_HOST:-localhost}:27017/default"
+max_pool_size = 20
 max_db_connections = 40
-read_preference = "primary"
-write_concern = "majority"
-label = "default"
 
 # =====================================
 # User Configurations
@@ -327,81 +103,30 @@ label = "default"
 [users]
 # User-specific settings and authentication
 # Supports multiple password formats: plaintext, md5, scram-sha-256
-# Format: [users.username] with individual settings
 
 # Application user with transaction support
 [users.app_user]
 password = "md5c6f4ee6d19b6e0c7c62b6c78e66b8e9a"  # MD5 hash of "app_password"
 pool_mode = "transaction"  # Override global pool mode
 max_user_connections = 50  # Per-user connection limit
-allowed_databases = ["production_app", "analytics_db"]  # Restrict database access
-default_database = "production_app"
-read_only = false  # Allow writes
 
 # Analytics user - read-heavy workload
 [users.analytics_user]
 password = "SCRAM-SHA-256$4096:salt$hash:serverkey"  # SCRAM-SHA-256 hash
 pool_mode = "session"
 max_user_connections = 30
-allowed_databases = ["analytics_db", "reporting"]
-read_preference = "secondaryPreferred"  # Prefer reading from secondary
-read_only = false
 
 # Read-only reporting user
 [users.readonly_user]
 password = "md5e1671797c52e15f763380b45e841ec32"  # MD5 hash of "readonly_pass"
 pool_mode = "statement"  # Most restrictive mode - no transaction state
 max_user_connections = 100
-allowed_databases = ["reporting", "analytics_db"]
-read_only = true  # Force read-only mode
-query_timeout = 300  # 5 minute timeout for long reports
 
 # Admin user with full access
 [users.admin]
 password = "${ADMIN_PASSWORD_HASH}"  # From environment variable
 pool_mode = "session"
 max_user_connections = 10
-admin_access = true  # Can access admin commands
-stats_access = true  # Can view statistics
-allowed_databases = ["*"]  # Access to all databases
-read_only = false
-
-# Monitoring user for health checks
-[users.monitor]
-password = "md5fe01ce2a7fbac8fafaed7c982a04e229"  # MD5 hash of "monitor123"
-pool_mode = "statement"
-max_user_connections = 5
-allowed_databases = ["*"]
-read_only = true
-stats_access = true  # Can view stats but not admin commands
-
-# Development user with limited access
-[users.dev_user]
-password = "plaintext:dev_password123"  # Plaintext (not recommended for production)
-pool_mode = "session"
-max_user_connections = 20
-allowed_databases = ["local_dev"]
-read_only = false
-query_timeout = 60  # 1 minute timeout
-
-# Service account for application integration
-[users.service_account]
-password = "${SERVICE_ACCOUNT_HASH}"
-pool_mode = "transaction"
-max_user_connections = 200  # High limit for service accounts
-allowed_databases = ["production_app", "sharded_cluster"]
-connection_limit_per_db = 50  # Limit per database
-read_only = false
-
-# Backup user with special privileges
-[users.backup_user]
-password = "${BACKUP_USER_HASH}"
-pool_mode = "statement"
-max_user_connections = 5
-allowed_databases = ["*"]
-read_only = true  # Backup operations are read-only
-query_timeout = 0  # No timeout for backup operations
-server_lifetime = 7200  # 2 hour connection lifetime for long backups
 
 # =====================================
 # Environment Variable Examples
@@ -412,8 +137,6 @@ server_lifetime = 7200  # 2 hour connection lifetime for long backups
 # export ANALYTICS_PASSWORD="analytics_secure_pass"
 # export ADMIN_PASSWORD_HASH="md5a1b2c3d4e5f6..."
 # export DEFAULT_MONGO_HOST="mongodb-cluster.example.com"
-# export DEFAULT_MONGO_USER="default_user"
-# export DEFAULT_MONGO_PASSWORD="default_password"
 
 # =====================================
 # Usage Examples
@@ -429,18 +152,13 @@ server_lifetime = 7200  # 2 hour connection lifetime for long backups
 #
 # 4. Health check:
 #    curl http://localhost:9090/health
-#
-# 5. Reload configuration (send SIGHUP):
-#    kill -HUP $(cat /var/run/mongobouncer.pid)
 
 # =====================================
 # Production Deployment Notes
 # =====================================
 # 1. Always use environment variables for passwords in production
-# 2. Enable TLS for all production deployments
-# 3. Set appropriate connection limits based on your MongoDB cluster capacity
-# 4. Monitor metrics regularly and adjust pool sizes as needed
-# 5. Use read replicas for read-heavy workloads
-# 6. Configure appropriate timeouts based on your application requirements
-# 7. Regularly rotate passwords and update configuration
-# 8. Test failover scenarios with replica sets and sharded clusters
+# 2. Set appropriate connection limits based on your MongoDB cluster capacity
+# 3. Monitor metrics regularly and adjust pool sizes as needed
+# 4. Use read replicas for read-heavy workloads
+# 5. Configure appropriate timeouts based on your application requirements
+# 6. Regularly rotate passwords and update configuration

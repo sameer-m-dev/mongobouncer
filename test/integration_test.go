@@ -13,7 +13,6 @@ import (
 	"go.mongodb.org/mongo-driver/mongo/options"
 	"go.uber.org/zap"
 
-	"github.com/sameer-m-dev/mongobouncer/auth"
 	mongobouncer "github.com/sameer-m-dev/mongobouncer/mongo"
 	"github.com/sameer-m-dev/mongobouncer/pool"
 	"github.com/sameer-m-dev/mongobouncer/proxy"
@@ -96,29 +95,17 @@ max_user_connections = 20
 		t.Skip("File-based config system was removed in favor of TOML config")
 
 		// Initialize components with default values
-		// 1. Auth Manager
-		authManager, err := auth.NewManager(
-			logger,
-			"trust", // Default auth type
-			"",      // No auth file for now
-			"",
-			[]string{"admin"}, // Default admin users
-			[]string{"stats"}, // Default stats users
-		)
-		assert.NoError(t, err)
-
-		// 2. Pool Manager
+		// 1. Pool Manager
 		_ = pool.NewManager(
 			logger,
 			metrics,
 			"session", // Default pool mode
 			5,         // Min pool size
 			20,        // Max pool size
-			5,         // Default reserve size
 			100,       // Default max client conn
 		)
 
-		// 3. Database Router
+		// 2. Database Router
 		router := proxy.NewDatabaseRouter(logger)
 
 		// Add default routes for testing
@@ -153,33 +140,15 @@ max_user_connections = 20
 		}
 
 		// Test authentication
-		assert.True(t, authManager.IsAdminUser("admin"))
-		assert.True(t, authManager.IsAdminUser("root"))
-		assert.True(t, authManager.IsStatsUser("monitor"))
-		assert.True(t, authManager.IsStatsUser("admin")) // Admins can see stats
-
-		// Test pool modes
-		assert.Equal(t, "transaction", authManager.GetPoolMode("app_user"))
-		assert.Equal(t, "statement", authManager.GetPoolMode("readonly"))
-
 		// Test basic configuration (simplified for new system)
 		// These tests validate the components work together
-
-		// Test auth manager functionality
-		err = authManager.Authenticate("app_user", "anypass")
-		assert.NoError(t, err) // Trust auth allows any password
-
-		// Test pool modes are accessible
-		assert.Equal(t, "transaction", authManager.GetPoolMode("app_user"))
-		assert.Equal(t, "statement", authManager.GetPoolMode("readonly"))
 	})
 
 	t.Run("ClientConnectionFlow", func(t *testing.T) {
 		// Simulate a complete client connection flow
 
 		// Initialize components
-		authManager, _ := auth.NewManager(logger, "trust", "", "", nil, nil)
-		poolManager := pool.NewManager(logger, metrics, "session", 2, 10, 2, 50)
+		poolManager := pool.NewManager(logger, metrics, "session", 2, 10, 50)
 		router := proxy.NewDatabaseRouter(logger)
 
 		// Add some routes
@@ -196,12 +165,8 @@ max_user_connections = 20
 		clientID := "client-123"
 		username := "app_user"
 
-		// 2. Authenticate
-		err := authManager.Authenticate(username, "anypass")
-		assert.NoError(t, err)
-
-		// 3. Register client with pool manager
-		_, err = poolManager.RegisterClient(clientID, username, "myapp", pool.SessionMode)
+		// 2. Register client with pool manager
+		_, err := poolManager.RegisterClient(clientID, username, "myapp", pool.SessionMode)
 		assert.NoError(t, err)
 
 		// 4. Client sends query to "myapp" database
@@ -213,7 +178,7 @@ max_user_connections = 20
 		mongoClient := &mongobouncer.Mongo{} // Mock
 		opts := options.Client().ApplyURI("mongodb://localhost:27017/myapp")
 		mongoClient.SetClientOptions(opts)
-		dbPool := poolManager.GetPool("myapp", mongoClient, pool.SessionMode, 10)
+		dbPool := poolManager.GetPool("myapp", mongoClient, pool.SessionMode)
 		conn, err := dbPool.Checkout(clientID)
 		if err != nil {
 			// If MongoDB is not running, skip this test
@@ -239,7 +204,7 @@ max_user_connections = 20
 	t.Run("MultiDatabaseTransactions", func(t *testing.T) {
 		// Test handling of transactions across different databases
 
-		poolManager := pool.NewManager(logger, metrics, "transaction", 2, 10, 2, 50)
+		poolManager := pool.NewManager(logger, metrics, "transaction", 2, 10, 50)
 		router := proxy.NewDatabaseRouter(logger)
 
 		// Set up multiple databases
@@ -250,7 +215,7 @@ max_user_connections = 20
 				PoolMode:     "transaction",
 			})
 			// Create pool for each database
-			poolManager.GetPool(db, nil, pool.TransactionMode, 10)
+			poolManager.GetPool(db, nil, pool.TransactionMode)
 		}
 
 		// Register client
@@ -267,7 +232,7 @@ max_user_connections = 20
 			mongoClient := &mongobouncer.Mongo{} // Mock
 			opts := options.Client().ApplyURI(fmt.Sprintf("mongodb://localhost:27017/%s", db))
 			mongoClient.SetClientOptions(opts)
-			pool := poolManager.GetPool(db, mongoClient, pool.TransactionMode, 10)
+			pool := poolManager.GetPool(db, mongoClient, pool.TransactionMode)
 			conn, err := pool.Checkout(clientID)
 			if err != nil {
 				// If MongoDB is not running, skip this test
@@ -289,7 +254,7 @@ max_user_connections = 20
 			mongoClient := &mongobouncer.Mongo{} // Mock
 			opts := options.Client().ApplyURI(fmt.Sprintf("mongodb://localhost:27017/%s", db))
 			mongoClient.SetClientOptions(opts)
-			pool := poolManager.GetPool(db, mongoClient, pool.TransactionMode, 10)
+			pool := poolManager.GetPool(db, mongoClient, pool.TransactionMode)
 			pool.Return(conn)
 			assert.False(t, conn.InUse)
 		}
@@ -300,7 +265,7 @@ max_user_connections = 20
 	t.Run("LoadBalancing", func(t *testing.T) {
 		// Test load distribution across pools
 
-		poolManager := pool.NewManager(logger, metrics, "statement", 1, 5, 1, 100)
+		poolManager := pool.NewManager(logger, metrics, "statement", 1, 5, 100)
 		router := proxy.NewDatabaseRouter(logger)
 
 		// Set up sharded databases
@@ -346,7 +311,7 @@ max_user_connections = 20
 					mu.Unlock()
 
 					// In statement mode, connection is immediately returned
-					pool := poolManager.GetPool(shard, nil, pool.StatementMode, 5)
+					pool := poolManager.GetPool(shard, nil, pool.StatementMode)
 					conn, err := pool.Checkout(clientID)
 					if err != nil {
 						continue
@@ -376,7 +341,7 @@ max_user_connections = 20
 	t.Run("FailoverScenario", func(t *testing.T) {
 		// Test handling of database failover
 
-		poolManager := pool.NewManager(logger, metrics, "session", 2, 10, 2, 50)
+		poolManager := pool.NewManager(logger, metrics, "session", 2, 10, 50)
 		router := proxy.NewDatabaseRouter(logger)
 
 		// Primary and failover configuration
@@ -424,9 +389,7 @@ max_user_connections = 20
 	t.Run("MonitoringAndStats", func(t *testing.T) {
 		// Test statistics collection across components
 
-		authManager, _ := auth.NewManager(logger, "trust", "", "",
-			[]string{"admin"}, []string{"monitor"})
-		poolManager := pool.NewManager(logger, metrics, "session", 2, 10, 2, 50)
+		poolManager := pool.NewManager(logger, metrics, "session", 2, 10, 50)
 		router := proxy.NewDatabaseRouter(logger)
 
 		// Set up environment
@@ -440,7 +403,7 @@ max_user_connections = 20
 			_, err := poolManager.RegisterClient(clientID, "user", "db1", pool.SessionMode)
 			assert.NoError(t, err)
 
-			pool := poolManager.GetPool("db1", nil, pool.SessionMode, 10)
+			pool := poolManager.GetPool("db1", nil, pool.SessionMode)
 			conn, err := pool.Checkout(clientID)
 			if err == nil {
 				pool.Return(conn)
@@ -452,14 +415,9 @@ max_user_connections = 20
 		assert.Equal(t, 2, routerStats["exact_routes"])
 		assert.Equal(t, true, routerStats["has_wildcard"])
 
-		pool1 := poolManager.GetPool("db1", nil, pool.SessionMode, 10)
+		pool1 := poolManager.GetPool("db1", nil, pool.SessionMode)
 		poolStats := pool1.GetStats()
 		assert.True(t, poolStats["total_requests"].(int64) >= 10)
-
-		// Check permissions for stats access
-		assert.True(t, authManager.IsStatsUser("admin"))
-		assert.True(t, authManager.IsStatsUser("monitor"))
-		assert.False(t, authManager.IsStatsUser("regular_user"))
 
 		// Clean up
 		for i := 0; i < 10; i++ {
@@ -471,7 +429,7 @@ max_user_connections = 20
 		// Test various edge cases and error conditions
 
 		t.Run("MaxClientsReached", func(t *testing.T) {
-			poolManager := pool.NewManager(logger, metrics, "session", 2, 10, 2, 5) // Max 5 clients
+			poolManager := pool.NewManager(logger, metrics, "session", 2, 10, 5) // Max 5 clients
 
 			// Register max clients
 			for i := 0; i < 5; i++ {
@@ -494,15 +452,9 @@ max_user_connections = 20
 			assert.Contains(t, err.Error(), "no route found")
 		})
 
-		t.Run("InvalidAuthType", func(t *testing.T) {
-			_, err := auth.NewManager(logger, "invalid-auth-type", "", "", nil, nil)
-			// Should still create manager, but authentication might fail
-			assert.NoError(t, err) // Manager creation succeeds
-		})
-
 		t.Run("PoolExhaustion", func(t *testing.T) {
-			poolManager := pool.NewManager(logger, metrics, "session", 0, 2, 0, 10) // Small pool
-			pool := poolManager.GetPool("small", nil, pool.SessionMode, 2)
+			poolManager := pool.NewManager(logger, metrics, "session", 0, 2, 10) // Small pool
+			pool := poolManager.GetPool("small", nil, pool.SessionMode)
 
 			// Exhaust pool
 			conn1, _ := pool.Checkout("client1")

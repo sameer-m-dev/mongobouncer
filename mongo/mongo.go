@@ -12,6 +12,7 @@ import (
 	"unsafe"
 
 	"github.com/sameer-m-dev/mongobouncer/util"
+	"go.mongodb.org/mongo-driver/event"
 	"go.mongodb.org/mongo-driver/mongo"
 	"go.mongodb.org/mongo-driver/mongo/address"
 	"go.mongodb.org/mongo-driver/mongo/description"
@@ -24,6 +25,29 @@ import (
 
 const pingTimeout = 60 * time.Second
 const disconnectTimeout = 10 * time.Second
+
+// PoolStats tracks MongoDB driver connection pool statistics
+type PoolStats struct {
+	mu                sync.RWMutex
+	activeConnections int64
+	totalConnections  int64
+	maxPoolSize       int64
+	checkoutCount     int64
+	checkinCount      int64
+	checkoutFailures  int64
+	lastUpdated       time.Time
+}
+
+// HealthStats tracks MongoDB connection health
+type HealthStats struct {
+	mu               sync.RWMutex
+	isHealthy        bool
+	lastHealthCheck  time.Time
+	healthCheckCount int64
+	healthFailures   int64
+	lastError        error
+	avgResponseTime  time.Duration
+}
 
 type Mongo struct {
 	log     *zap.Logger
@@ -39,6 +63,10 @@ type Mongo struct {
 
 	roundTripCtx    context.Context
 	roundTripCancel func()
+
+	// Pool monitoring
+	poolStats   *PoolStats
+	healthStats *HealthStats
 }
 
 func extractTopology(c *mongo.Client) *topology.Topology {
@@ -46,6 +74,92 @@ func extractTopology(c *mongo.Client) *topology.Topology {
 	d := e.FieldByName("deployment")
 	d = reflect.NewAt(d.Type(), unsafe.Pointer(d.UnsafeAddr())).Elem() // #nosec G103
 	return d.Interface().(*topology.Topology)
+}
+
+// createPoolMonitor creates a pool monitor that tracks connection pool events
+func createPoolMonitor(log *zap.Logger, metrics *util.MetricsClient, databaseName string, poolStats *PoolStats) *event.PoolMonitor {
+	return &event.PoolMonitor{
+		Event: func(evt *event.PoolEvent) {
+			poolStats.mu.Lock()
+			defer poolStats.mu.Unlock()
+
+			poolStats.lastUpdated = time.Now()
+
+			switch evt.Type {
+			case "ConnectionPoolCreated":
+				// Extract max pool size from pool options
+				if evt.PoolOptions != nil {
+					poolStats.maxPoolSize = int64(evt.PoolOptions.MaxPoolSize)
+				}
+				log.Debug("Connection pool created",
+					zap.String("database", databaseName),
+					zap.Int64("max_pool_size", poolStats.maxPoolSize))
+
+			case "ConnectionCreated":
+				poolStats.totalConnections++
+				log.Debug("Connection created",
+					zap.String("database", databaseName),
+					zap.Int64("total_connections", poolStats.totalConnections))
+
+			case "ConnectionClosed":
+				poolStats.totalConnections--
+				if poolStats.totalConnections < 0 {
+					poolStats.totalConnections = 0
+				}
+				log.Debug("Connection closed",
+					zap.String("database", databaseName),
+					zap.Int64("total_connections", poolStats.totalConnections))
+
+			case "ConnectionCheckedOut":
+				poolStats.activeConnections++
+				poolStats.checkoutCount++
+				log.Debug("Connection checked out",
+					zap.String("database", databaseName),
+					zap.Int64("active_connections", poolStats.activeConnections))
+
+			case "ConnectionCheckedIn":
+				poolStats.activeConnections--
+				poolStats.checkinCount++
+				if poolStats.activeConnections < 0 {
+					poolStats.activeConnections = 0
+				}
+				log.Debug("Connection checked in",
+					zap.String("database", databaseName),
+					zap.Int64("active_connections", poolStats.activeConnections))
+
+			case "ConnectionCheckOutFailed":
+				poolStats.checkoutFailures++
+				log.Debug("Connection checkout failed",
+					zap.String("database", databaseName),
+					zap.Int64("checkout_failures", poolStats.checkoutFailures))
+			}
+
+			// Update metrics
+			if metrics != nil {
+				tags := []string{fmt.Sprintf("database:%s", databaseName)}
+
+				// Calculate utilization ratio
+				utilization := 0.0
+				if poolStats.maxPoolSize > 0 {
+					utilization = float64(poolStats.activeConnections) / float64(poolStats.maxPoolSize)
+				}
+
+				log.Debug("Updating MongoDB pool metrics",
+					zap.String("database", databaseName),
+					zap.Int64("active_connections", poolStats.activeConnections),
+					zap.Int64("max_pool_size", poolStats.maxPoolSize),
+					zap.Float64("utilization", utilization))
+
+				_ = metrics.Gauge("mongodb_pool_active_connections", float64(poolStats.activeConnections), tags, 1)
+				_ = metrics.Gauge("mongodb_pool_total_connections", float64(poolStats.totalConnections), tags, 1)
+				_ = metrics.Gauge("mongodb_pool_max_connections", float64(poolStats.maxPoolSize), tags, 1)
+				_ = metrics.Gauge("mongodb_pool_utilization_ratio", utilization, tags, 1)
+				_ = metrics.Gauge("mongodb_pool_checkout_total", float64(poolStats.checkoutCount), tags, 1)
+				_ = metrics.Gauge("mongodb_pool_checkin_total", float64(poolStats.checkinCount), tags, 1)
+				_ = metrics.Gauge("mongodb_pool_checkout_failures_total", float64(poolStats.checkoutFailures), tags, 1)
+			}
+		},
+	}
 }
 
 func extractDatabaseName(opts *options.ClientOptions) string {
@@ -79,6 +193,15 @@ func Connect(log *zap.Logger, metrics *util.MetricsClient, opts *options.ClientO
 	ctx, cancel := context.WithTimeout(context.Background(), pingTimeout)
 	defer cancel()
 
+	// Create pool stats and health stats
+	poolStats := &PoolStats{}
+	healthStats := &HealthStats{}
+
+	// Add pool monitor to client options
+	databaseName := extractDatabaseName(opts)
+	poolMonitor := createPoolMonitor(log, metrics, databaseName, poolStats)
+	opts = opts.SetPoolMonitor(poolMonitor)
+
 	var err error
 	log.Info("Connect")
 	c, err := mongo.Connect(ctx, opts)
@@ -99,7 +222,6 @@ func Connect(log *zap.Logger, metrics *util.MetricsClient, opts *options.ClientO
 	go topologyMonitor(log, t)
 
 	rtCtx, rtCancel := context.WithCancel(context.Background())
-	databaseName := extractDatabaseName(opts)
 	m := Mongo{
 		log:             log,
 		metrics:         metrics,
@@ -111,6 +233,8 @@ func Connect(log *zap.Logger, metrics *util.MetricsClient, opts *options.ClientO
 		databaseName:    databaseName,
 		roundTripCtx:    rtCtx,
 		roundTripCancel: rtCancel,
+		poolStats:       poolStats,
+		healthStats:     healthStats,
 	}
 	go m.cacheMonitor()
 
@@ -123,6 +247,121 @@ func (m *Mongo) Description() description.Topology {
 
 func (m *Mongo) DatabaseName() string {
 	return m.databaseName
+}
+
+// GetPoolStats returns the current connection pool statistics
+func (m *Mongo) GetPoolStats() map[string]interface{} {
+	if m.poolStats == nil {
+		return map[string]interface{}{}
+	}
+
+	m.poolStats.mu.RLock()
+	defer m.poolStats.mu.RUnlock()
+
+	utilization := 0.0
+	if m.poolStats.maxPoolSize > 0 {
+		utilization = float64(m.poolStats.activeConnections) / float64(m.poolStats.maxPoolSize)
+	}
+
+	return map[string]interface{}{
+		"active_connections": m.poolStats.activeConnections,
+		"total_connections":  m.poolStats.totalConnections,
+		"max_pool_size":      m.poolStats.maxPoolSize,
+		"utilization_ratio":  utilization,
+		"checkout_count":     m.poolStats.checkoutCount,
+		"checkin_count":      m.poolStats.checkinCount,
+		"checkout_failures":  m.poolStats.checkoutFailures,
+		"last_updated":       m.poolStats.lastUpdated,
+	}
+}
+
+// GetHealthStats returns the current health statistics
+func (m *Mongo) GetHealthStats() map[string]interface{} {
+	if m.healthStats == nil {
+		return map[string]interface{}{}
+	}
+
+	m.healthStats.mu.RLock()
+	defer m.healthStats.mu.RUnlock()
+
+	return map[string]interface{}{
+		"is_healthy":         m.healthStats.isHealthy,
+		"last_health_check":  m.healthStats.lastHealthCheck,
+		"health_check_count": m.healthStats.healthCheckCount,
+		"health_failures":    m.healthStats.healthFailures,
+		"last_error":         m.healthStats.lastError,
+		"avg_response_time":  m.healthStats.avgResponseTime,
+	}
+}
+
+// CheckHealth performs a health check on the MongoDB connection
+func (m *Mongo) CheckHealth() error {
+	if m.healthStats == nil {
+		return fmt.Errorf("health stats not initialized")
+	}
+
+	start := time.Now()
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	m.healthStats.mu.Lock()
+	defer m.healthStats.mu.Unlock()
+
+	m.healthStats.healthCheckCount++
+
+	// Perform ping
+	err := m.client.Ping(ctx, readpref.Primary())
+	responseTime := time.Since(start)
+
+	if err != nil {
+		m.healthStats.isHealthy = false
+		m.healthStats.healthFailures++
+		m.healthStats.lastError = err
+		m.healthStats.lastHealthCheck = time.Now()
+
+		m.log.Debug("Health check failed",
+			zap.String("database", m.databaseName),
+			zap.Error(err),
+			zap.Duration("response_time", responseTime))
+
+		return err
+	}
+
+	// Update health stats
+	m.healthStats.isHealthy = true
+	m.healthStats.lastError = nil
+	m.healthStats.lastHealthCheck = time.Now()
+
+	// Update average response time (simple moving average)
+	if m.healthStats.avgResponseTime == 0 {
+		m.healthStats.avgResponseTime = responseTime
+	} else {
+		m.healthStats.avgResponseTime = (m.healthStats.avgResponseTime + responseTime) / 2
+	}
+
+	m.log.Debug("Health check passed",
+		zap.String("database", m.databaseName),
+		zap.Duration("response_time", responseTime),
+		zap.Duration("avg_response_time", m.healthStats.avgResponseTime))
+
+	return nil
+}
+
+// IsHealthy returns whether the MongoDB connection is currently healthy
+func (m *Mongo) IsHealthy() bool {
+	if m.healthStats == nil {
+		return false
+	}
+
+	m.healthStats.mu.RLock()
+	defer m.healthStats.mu.RUnlock()
+
+	// Consider unhealthy if no health check in last 30 seconds
+	if time.Since(m.healthStats.lastHealthCheck) > 30*time.Second {
+		return false
+	}
+
+	return m.healthStats.isHealthy
 }
 
 // GetClientOptions returns the client options used to create this MongoDB client
@@ -195,166 +434,188 @@ func (m *Mongo) RoundTrip(msg *Message, tags []string) (_ *Message, err error) {
 		return nil, errors.New("connection closed")
 	}
 
-	// CursorID is pinned to a server by CursorID-collection name key
-	// Transaction is pinned to a server by the issued lsid
-	requestCursorID, _ := msg.Op.CursorID()
-	requestCommand, collection := msg.Op.CommandAndCollection()
-	transactionDetails := msg.Op.TransactionDetails()
-	server, err := m.selectServer(requestCursorID, collection, transactionDetails)
-	if err != nil {
-		// Record server selection error
-		if m.metrics != nil {
-			// Extract database name from collection
-			databaseName := "default"
-			if collection != "" {
-				parts := strings.SplitN(collection, ".", 2)
-				if len(parts) >= 2 {
-					databaseName = parts[0]
-				}
-			}
-			errorTags := []string{
-				fmt.Sprintf("database:%s", databaseName),
-				fmt.Sprintf("error_type:%s", "server_selection_error"),
-			}
-			_ = m.metrics.Incr("error", errorTags, 1)
+	// Check health before operation
+	if !m.IsHealthy() {
+		m.log.Debug("Connection unhealthy, performing health check",
+			zap.String("database", m.databaseName))
+		if healthErr := m.CheckHealth(); healthErr != nil {
+			m.log.Warn("Health check failed, proceeding with operation",
+				zap.String("database", m.databaseName),
+				zap.Error(healthErr))
 		}
-		return nil, err
 	}
 
-	// Record server selection success
-	if m.metrics != nil {
-		// Extract database name from the operation
-		databaseName := "default"
-		if msg.Op != nil {
-			// Try to extract database name from the operation
-			if dbName := msg.Op.DatabaseName(); dbName != "" {
-				databaseName = dbName
-			} else if collection != "" {
-				// Fallback to collection name parsing
-				parts := strings.SplitN(collection, ".", 2)
-				if len(parts) >= 2 {
-					databaseName = parts[0]
-				}
-			}
-		}
-		_ = m.metrics.Incr("server_selection", []string{fmt.Sprintf("database:%s", databaseName)}, 1)
-	}
+	// Retry logic with exponential backoff
+	maxRetries := 3
+	baseDelay := 100 * time.Millisecond
 
-	conn, err := m.checkoutConnection(server)
-	if err != nil {
-		// Record connection checkout error
-		if m.metrics != nil {
-			// Extract database name from collection
-			databaseName := "default"
-			if collection != "" {
-				parts := strings.SplitN(collection, ".", 2)
-				if len(parts) >= 2 {
-					databaseName = parts[0]
-				}
-			}
-			errorTags := []string{
-				fmt.Sprintf("database:%s", databaseName),
-				fmt.Sprintf("error_type:%s", "connection_checkout_error"),
-			}
-			_ = m.metrics.Incr("error", errorTags, 1)
-		}
-		return nil, err
-	}
+	for attempt := 0; attempt <= maxRetries; attempt++ {
+		// CursorID is pinned to a server by CursorID-collection name key
+		// Transaction is pinned to a server by the issued lsid
+		requestCursorID, _ := msg.Op.CursorID()
+		requestCommand, collection := msg.Op.CommandAndCollection()
+		transactionDetails := msg.Op.TransactionDetails()
 
-	addr = conn.Address()
-	tags = append(
-		tags,
-		fmt.Sprintf("address:%s", conn.Address().String()),
-	)
-
-	defer func() {
-		err := conn.Close()
+		server, err := m.selectServer(requestCursorID, collection, transactionDetails)
 		if err != nil {
-			m.log.Error("Error closing Mongo connection", zap.Error(err), zap.String("address", addr.String()))
-		}
-	}()
-
-	// see https://github.com/mongodb/mongo-go-driver/blob/v1.7.2/x/mongo/driver/operation.go#L430-L432
-	ep, ok := server.(driver.ErrorProcessor)
-	if !ok {
-		return nil, errors.New("server ErrorProcessor type assertion failed")
-	}
-
-	unacknowledged := msg.Op.Unacknowledged()
-	wm, err := m.roundTrip(conn, msg.Wm, unacknowledged, tags)
-	if err != nil {
-		m.processError(err, ep, addr, conn)
-		return nil, err
-	}
-	if unacknowledged {
-		return &Message{}, nil
-	}
-
-	op, err := Decode(wm)
-	if err != nil {
-		return nil, err
-	}
-
-	// check if an error is returned in the server response
-	opErr := op.Error()
-	if opErr != nil {
-		// process the error, but don't return it as we still want to forward the response to the client
-		m.processError(opErr, ep, addr, conn)
-	}
-
-	if responseCursorID, ok := op.CursorID(); ok {
-		if responseCursorID != 0 {
-			m.cursors.add(responseCursorID, collection, server)
-			// Record cursor opened
+			// Record server selection error
 			if m.metrics != nil {
-				// Extract database name from the operation
+				// Extract database name from collection
 				databaseName := "default"
-				if msg.Op != nil {
-					// Try to extract database name from the operation
-					if dbName := msg.Op.DatabaseName(); dbName != "" {
-						databaseName = dbName
-					} else if collection != "" {
-						// Fallback to collection name parsing
-						parts := strings.SplitN(collection, ".", 2)
-						if len(parts) >= 2 {
-							databaseName = parts[0]
-						}
+				if collection != "" {
+					parts := strings.SplitN(collection, ".", 2)
+					if len(parts) >= 2 {
+						databaseName = parts[0]
 					}
 				}
-				_ = m.metrics.Incr("cursor_opened", []string{fmt.Sprintf("database:%s", databaseName)}, 1)
+				errorTags := []string{
+					fmt.Sprintf("database:%s", databaseName),
+					fmt.Sprintf("error_type:%s", "server_selection_error"),
+				}
+				_ = m.metrics.Incr("error", errorTags, 1)
 			}
-		} else if requestCursorID != 0 {
-			m.cursors.remove(requestCursorID, collection)
-			// Record cursor closed
-			if m.metrics != nil {
-				// Extract database name from the operation
-				databaseName := "default"
-				if msg.Op != nil {
-					// Try to extract database name from the operation
-					if dbName := msg.Op.DatabaseName(); dbName != "" {
-						databaseName = dbName
-					} else if collection != "" {
-						// Fallback to collection name parsing
-						parts := strings.SplitN(collection, ".", 2)
-						if len(parts) >= 2 {
-							databaseName = parts[0]
-						}
+
+			if attempt < maxRetries {
+				delay := baseDelay * time.Duration(1<<uint(attempt)) // Exponential backoff
+				m.log.Debug("Server selection failed, retrying",
+					zap.String("database", m.databaseName),
+					zap.Int("attempt", attempt+1),
+					zap.Duration("delay", delay),
+					zap.Error(err))
+				time.Sleep(delay)
+				continue
+			}
+			return nil, err
+		}
+
+		// Record server selection success
+		if m.metrics != nil {
+			// Extract database name from the operation
+			databaseName := "default"
+			if msg.Op != nil {
+				// Try to extract database name from the operation
+				if dbName := msg.Op.DatabaseName(); dbName != "" {
+					databaseName = dbName
+				} else if collection != "" {
+					// Fallback to collection name parsing
+					parts := strings.SplitN(collection, ".", 2)
+					if len(parts) >= 2 {
+						databaseName = parts[0]
 					}
 				}
-				_ = m.metrics.Incr("cursor_closed", []string{fmt.Sprintf("database:%s", databaseName)}, 1)
 			}
+			_ = m.metrics.Incr("server_selection", []string{fmt.Sprintf("database:%s", databaseName)}, 1)
 		}
-	}
 
-	if transactionDetails != nil {
-		if transactionDetails.IsStartTransaction {
-			m.transactions.add(transactionDetails.LsID, server)
-		} else {
-			if requestCommand == AbortTransaction || requestCommand == CommitTransaction {
-				m.log.Debug("Removing transaction from the cache", zap.String("reqCommand", string(requestCommand)))
-				m.transactions.remove(transactionDetails.LsID)
+		conn, err := m.checkoutConnection(server)
+		if err != nil {
+			// Record connection checkout error
+			if m.metrics != nil {
+				// Extract database name from collection
+				databaseName := "default"
+				if collection != "" {
+					parts := strings.SplitN(collection, ".", 2)
+					if len(parts) >= 2 {
+						databaseName = parts[0]
+					}
+				}
+				errorTags := []string{
+					fmt.Sprintf("database:%s", databaseName),
+					fmt.Sprintf("error_type:%s", "connection_checkout_error"),
+				}
+				_ = m.metrics.Incr("error", errorTags, 1)
+			}
 
-				// Record transaction metrics
+			if attempt < maxRetries {
+				delay := baseDelay * time.Duration(1<<uint(attempt))
+				m.log.Debug("Connection checkout failed, retrying",
+					zap.String("database", m.databaseName),
+					zap.Int("attempt", attempt+1),
+					zap.Duration("delay", delay),
+					zap.Error(err))
+				time.Sleep(delay)
+				continue
+			}
+			return nil, err
+		}
+
+		addr = conn.Address()
+		tags = append(
+			tags,
+			fmt.Sprintf("address:%s", conn.Address().String()),
+		)
+
+		defer func() {
+			err := conn.Close()
+			if err != nil {
+				m.log.Error("Error closing Mongo connection", zap.Error(err), zap.String("address", addr.String()))
+			}
+		}()
+
+		// see https://github.com/mongodb/mongo-go-driver/blob/v1.7.2/x/mongo/driver/operation.go#L430-L432
+		ep, ok := server.(driver.ErrorProcessor)
+		if !ok {
+			if attempt < maxRetries {
+				delay := baseDelay * time.Duration(1<<uint(attempt))
+				m.log.Debug("Server ErrorProcessor assertion failed, retrying",
+					zap.String("database", m.databaseName),
+					zap.Int("attempt", attempt+1),
+					zap.Duration("delay", delay))
+				time.Sleep(delay)
+				continue
+			}
+			return nil, errors.New("server ErrorProcessor type assertion failed")
+		}
+
+		unacknowledged := msg.Op.Unacknowledged()
+		wm, err := m.roundTrip(conn, msg.Wm, unacknowledged, tags)
+		if err != nil {
+			m.processError(err, ep, addr, conn)
+
+			// Check if this is a retryable error
+			if attempt < maxRetries && m.isRetryableError(err) {
+				delay := baseDelay * time.Duration(1<<uint(attempt))
+				m.log.Debug("Round trip failed with retryable error, retrying",
+					zap.String("database", m.databaseName),
+					zap.Int("attempt", attempt+1),
+					zap.Duration("delay", delay),
+					zap.Error(err))
+				time.Sleep(delay)
+				continue
+			}
+			return nil, err
+		}
+
+		if unacknowledged {
+			return &Message{}, nil
+		}
+
+		op, err := Decode(wm)
+		if err != nil {
+			if attempt < maxRetries {
+				delay := baseDelay * time.Duration(1<<uint(attempt))
+				m.log.Debug("Message decode failed, retrying",
+					zap.String("database", m.databaseName),
+					zap.Int("attempt", attempt+1),
+					zap.Duration("delay", delay),
+					zap.Error(err))
+				time.Sleep(delay)
+				continue
+			}
+			return nil, err
+		}
+
+		// check if an error is returned in the server response
+		opErr := op.Error()
+		if opErr != nil {
+			// process the error, but don't return it as we still want to forward the response to the client
+			m.processError(opErr, ep, addr, conn)
+		}
+
+		if responseCursorID, ok := op.CursorID(); ok {
+			if responseCursorID != 0 {
+				m.cursors.add(responseCursorID, collection, server)
+				// Record cursor opened
 				if m.metrics != nil {
 					// Extract database name from the operation
 					databaseName := "default"
@@ -370,20 +631,105 @@ func (m *Mongo) RoundTrip(msg *Message, tags []string) (_ *Message, err error) {
 							}
 						}
 					}
-					if requestCommand == CommitTransaction {
-						_ = m.metrics.Incr("transaction_committed", []string{fmt.Sprintf("database:%s", databaseName)}, 1)
-					} else if requestCommand == AbortTransaction {
-						_ = m.metrics.Incr("transaction_aborted", []string{fmt.Sprintf("database:%s", databaseName)}, 1)
+					_ = m.metrics.Incr("cursor_opened", []string{fmt.Sprintf("database:%s", databaseName)}, 1)
+				}
+			} else if requestCursorID != 0 {
+				m.cursors.remove(requestCursorID, collection)
+				// Record cursor closed
+				if m.metrics != nil {
+					// Extract database name from the operation
+					databaseName := "default"
+					if msg.Op != nil {
+						// Try to extract database name from the operation
+						if dbName := msg.Op.DatabaseName(); dbName != "" {
+							databaseName = dbName
+						} else if collection != "" {
+							// Fallback to collection name parsing
+							parts := strings.SplitN(collection, ".", 2)
+							if len(parts) >= 2 {
+								databaseName = parts[0]
+							}
+						}
+					}
+					_ = m.metrics.Incr("cursor_closed", []string{fmt.Sprintf("database:%s", databaseName)}, 1)
+				}
+			}
+		}
+
+		if transactionDetails != nil {
+			if transactionDetails.IsStartTransaction {
+				m.transactions.add(transactionDetails.LsID, server)
+			} else {
+				if requestCommand == AbortTransaction || requestCommand == CommitTransaction {
+					m.log.Debug("Removing transaction from the cache", zap.String("reqCommand", string(requestCommand)))
+					m.transactions.remove(transactionDetails.LsID)
+
+					// Record transaction metrics
+					if m.metrics != nil {
+						// Extract database name from the operation
+						databaseName := "default"
+						if msg.Op != nil {
+							// Try to extract database name from the operation
+							if dbName := msg.Op.DatabaseName(); dbName != "" {
+								databaseName = dbName
+							} else if collection != "" {
+								// Fallback to collection name parsing
+								parts := strings.SplitN(collection, ".", 2)
+								if len(parts) >= 2 {
+									databaseName = parts[0]
+								}
+							}
+						}
+						if requestCommand == CommitTransaction {
+							_ = m.metrics.Incr("transaction_committed", []string{fmt.Sprintf("database:%s", databaseName)}, 1)
+						} else if requestCommand == AbortTransaction {
+							_ = m.metrics.Incr("transaction_aborted", []string{fmt.Sprintf("database:%s", databaseName)}, 1)
+						}
 					}
 				}
 			}
 		}
+
+		// Success! Return the response
+		return &Message{
+			Wm: wm,
+			Op: op,
+		}, nil
 	}
 
-	return &Message{
-		Wm: wm,
-		Op: op,
-	}, nil
+	// This should never be reached, but just in case
+	return nil, errors.New("max retries exceeded")
+}
+
+// isRetryableError determines if an error is retryable
+func (m *Mongo) isRetryableError(err error) bool {
+	if err == nil {
+		return false
+	}
+
+	errStr := err.Error()
+
+	// Network-related errors that are typically retryable
+	retryableErrors := []string{
+		"connection refused",
+		"connection reset",
+		"connection timeout",
+		"network is unreachable",
+		"no route to host",
+		"temporary failure",
+		"server selection error",
+		"context deadline exceeded",
+		"EOF",
+		"socket was unexpectedly closed",
+	}
+
+	for _, retryableErr := range retryableErrors {
+		if strings.Contains(strings.ToLower(errStr), retryableErr) {
+			return true
+		}
+	}
+
+	return false
 }
 
 func (m *Mongo) selectServer(requestCursorID int64, collection string, transDetails *TransactionDetails) (server driver.Server, err error) {

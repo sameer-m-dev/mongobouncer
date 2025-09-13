@@ -68,10 +68,17 @@ func handleConnection(log *zap.Logger, metrics *util.MetricsClient, address stri
 	c.extractTargetDatabaseFromConnectionString()
 
 	// Register client with pool manager for proper connection pooling
+	// We'll register with a placeholder database and update it when we know the actual database
 	if poolManager != nil {
-		_, err := poolManager.RegisterClient(clientID, "default", "default", pool.SessionMode)
+		configuredPoolMode := poolManager.GetDefaultMode()
+		_, err := poolManager.RegisterClient(clientID, "default", "default", configuredPoolMode)
 		if err != nil {
 			log.Error("Failed to register client with pool manager", zap.Error(err))
+		} else {
+			// Track active sessions
+			if c.metrics != nil {
+				_ = c.metrics.Gauge("sessions_active", 1, []string{}, 1)
+			}
 		}
 	}
 
@@ -79,6 +86,10 @@ func handleConnection(log *zap.Logger, metrics *util.MetricsClient, address stri
 	defer func() {
 		if poolManager != nil {
 			poolManager.UnregisterClient(clientID)
+			// Decrement active sessions
+			if c.metrics != nil {
+				_ = c.metrics.Gauge("sessions_active", -1, []string{}, 1)
+			}
 		}
 	}()
 
@@ -314,23 +325,83 @@ func (c *connection) roundTripWithPool(msg *mongo.Message, databaseName string, 
 		zap.String("extracted_db", databaseName),
 		zap.String("actual_db", actualDatabaseName))
 
-	// Get connection from pool (client is already registered)
+	// Ensure client is registered with the correct database
+	// If this is the first operation for this database, re-register the client
+	if c.poolManager != nil {
+		// Check if client is registered for this database
+		client, exists := c.poolManager.GetClient(c.clientID)
+		if !exists || client.Database != actualDatabaseName {
+			// Re-register client with the correct database
+			c.log.Debug("Re-registering client with correct database",
+				zap.String("client_id", c.clientID),
+				zap.String("database", actualDatabaseName))
+
+			// Unregister old client if exists
+			if exists {
+				c.poolManager.UnregisterClient(c.clientID)
+			}
+
+			// Register with correct database using the configured pool mode
+			configuredPoolMode := c.poolManager.GetDefaultMode()
+			_, err := c.poolManager.RegisterClient(c.clientID, "default", actualDatabaseName, configuredPoolMode)
+			if err != nil {
+				c.log.Error("Failed to re-register client with pool manager", zap.Error(err))
+				// Return error instead of falling back to direct client usage
+				return nil, err
+			}
+		}
+	}
+
+	// Get connection from pool (client is now registered with correct database)
 	pooledConn, err := c.poolManager.GetConnection(c.clientID, actualDatabaseName, mongoClient, false, "")
 	if err != nil {
 		c.log.Warn("Failed to get connection from pool", zap.Error(err))
-		// Fallback to direct client usage
-		return mongoClient.RoundTrip(msg, tags)
+		// Return error instead of falling back to direct client usage
+		// This ensures we respect connection pool limits
+		return nil, err
 	}
 
 	// Use the pooled connection's MongoDB client for the round trip
 	result, err := pooledConn.MongoClient.RoundTrip(msg, tags)
 
+	// Determine if this is the end of a transaction based on operation type
+	isEndOfTransaction := c.isEndOfTransaction(msg.Op)
+
 	// Return connection to pool based on pool mode
 	// For session mode, we don't return the connection immediately
 	// For statement mode, we return after each operation
-	c.poolManager.ReturnConnection(c.clientID, pooledConn, false)
+	// For transaction mode, we return based on transaction state
+	c.poolManager.ReturnConnection(c.clientID, pooledConn, isEndOfTransaction)
 
 	return result, err
+}
+
+// isEndOfTransaction determines if an operation marks the end of a transaction
+func (c *connection) isEndOfTransaction(op mongo.Operation) bool {
+	// For statement mode, every operation ends the transaction (connection should be returned)
+	// For transaction mode, only specific operations end transactions
+	// For session mode, connections are never returned until session ends
+
+	// Get the command to determine transaction state
+	command, _ := op.CommandAndCollection()
+	commandStr := string(command)
+
+	// Transaction-ending commands
+	transactionEndCommands := []string{
+		"commitTransaction",
+		"abortTransaction",
+		"endSession",
+	}
+
+	for _, endCmd := range transactionEndCommands {
+		if commandStr == endCmd {
+			return true
+		}
+	}
+
+	// For statement mode, every operation should return the connection
+	// This is handled in the pool manager based on pool mode
+	return false
 }
 
 // extractTargetDatabaseFromConnectionString extracts the target database from the client's connection
