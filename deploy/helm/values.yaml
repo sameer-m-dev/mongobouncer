@@ -28,7 +28,7 @@ app:
     # Connection management
     poolMode: "session" # session, statement, transaction
     minPoolSize: 5
-    maxPoolSize: 20
+    maxPoolSize: 10
     maxClientConn: 100
 
     # TLS configuration

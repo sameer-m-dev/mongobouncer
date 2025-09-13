@@ -91,6 +91,7 @@ pool_mode = "session"
 min_pool_size = 5
 max_pool_size = 20
 max_client_conn = 100
+auth_enabled = true
 
 [mongobouncer.metrics]
 address = "0.0.0.0:9090"
@@ -181,7 +182,7 @@ helm install mongobouncer ./deploy/helm/mongobouncer
 - ✅ **Cursor Tracking**: Maintains cursor-to-server mappings for complex queries
 - ✅ **Multi-Cluster Support**: Route different databases to separate MongoDB clusters
 - ✅ **Wildcard Database Support**: Dynamic routing based on database name patterns
-- ✅ **Authentication Handling**: Trust, MD5, and MongoDB native authentication methods
+- ✅ **Proxy-Level Authentication**: Secure authentication using appName-based credentials
 - ✅ **Dynamic Configuration**: Runtime configuration updates without restarts
 - ✅ **Prometheus Metrics**: Comprehensive monitoring and observability
 - ✅ **High Availability**: Graceful handling of MongoDB failovers and network issues
@@ -191,6 +192,47 @@ helm install mongobouncer ./deploy/helm/mongobouncer
 - **Replica Sets**: Primary-secondary configurations with automatic failover
 - **Sharded Clusters**: Distributed MongoDB with `mongos` routing
 - **Mixed Environments**: Simultaneous connections to different topology types
+
+### Authentication
+
+MongoBouncer implements a unique proxy-level authentication system that leverages MongoDB's `isMaster` handshake mechanism. This approach provides secure authentication without the complexity of traditional SASL authentication.
+
+**Key Features:**
+- 🔐 **Secure by Default**: Authentication enabled by default (`auth_enabled = true`)
+- 🌐 **Universal Coverage**: Every MongoDB operation requires authentication
+- ⚡ **Early Authentication**: Happens during handshake, before any operations
+- 🔧 **Configuration-Based**: Can be enabled/disabled via TOML configuration
+- 📝 **Clear Logging**: Comprehensive debug logging for troubleshooting
+
+**Authentication Method:**
+Credentials are passed using the `appName` parameter in MongoDB connection strings:
+
+```bash
+# Secure connection with authentication
+mongosh "mongodb://localhost:27017/admin?appName=admin:admin123"
+
+# Will fail without appName when auth_enabled = true
+mongosh "mongodb://localhost:27017/admin"
+# Error: MongoServerSelectionError: connection closed
+```
+
+**Configuration:**
+```toml
+[mongobouncer]
+auth_enabled = true  # Enable/disable authentication (default: true)
+
+[databases]
+admin = { connection_string = "mongodb://admin:admin123@host.docker.internal:27019/admin?authSource=admin" }
+app_db = { connection_string = "mongodb://appuser:apppass@host.docker.internal:27018/app_db?authSource=admin" }
+```
+
+**Why This Approach?**
+- **Universal**: Every MongoDB operation requires `isMaster` handshake first
+- **Simple**: No complex SASL handshake handling required
+- **Efficient**: Authentication happens once during connection establishment
+- **Secure**: Credentials validated against database configuration before any operations
+
+For detailed information about the authentication system, implementation details, and troubleshooting, see [AUTHENTICATION.md](AUTHENTICATION.md).
 
 ### Prometheus Metrics
 `mongobouncer` supports Prometheus metrics collection with a built-in HTTP endpoint for scraping. By default it serves metrics on `localhost:9090/metrics`. The following metrics are reported:
@@ -250,6 +292,7 @@ This project builds upon and extends [mongobetween](https://github.com/coinbase/
 
 ## Documentation
 
+- [Authentication System](./AUTHENTICATION.md) - Complete authentication system documentation, implementation details, and troubleshooting guide
 - [Comprehensive Tests](./docs/COMPREHENSIVE_TESTS.md) - Detailed testing documentation
 - [Prometheus Migration](./docs/PROMETHEUS_MIGRATION.md) - Metrics migration guide
 - [Test Cleanup Report](./docs/TEST_CLEANUP_REPORT.md) - Test cleanup documentation

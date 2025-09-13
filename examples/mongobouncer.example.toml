@@ -12,21 +12,22 @@ listen_port = 27017
 # =====================================
 # Logging & Debugging
 # =====================================
-log_level = "info"  # debug, info, warn, error
-logfile = ""  # Empty means stdout, or specify path: "/var/log/mongobouncer.log"
+log_level = "info" # debug, info, warn, error
+logfile = ""       # Empty means stdout, or specify path: "/var/log/mongobouncer.log"
 
 # =====================================
 # Connection Pooling & Performance
 # =====================================
-pool_mode = "statement"  # session, transaction, statement
-max_pool_size = 20                    # MongoDB driver's internal pool size
-min_pool_size = 3                     # MongoDB driver's minimum pool size
-max_client_conn = 100  # Maximum client connections (0 = unlimited)
-max_conn_idle_time = "30s"            # How long to keep idle connections
-server_selection_timeout = "5s"        # Server selection timeout
-connect_timeout = "5s"                # Connection establishment timeout
-socket_timeout = "30s"                # Socket operation timeout
-heartbeat_interval = "10s"            # Heartbeat frequency
+pool_mode = "statement"         # session, transaction, statement
+max_pool_size = 10              # MongoDB driver's internal pool size
+min_pool_size = 1               # MongoDB driver's minimum pool size
+max_client_conn = 100           # Maximum client connections (0 = unlimited)
+max_conn_idle_time = "30s"      # How long to keep idle connections
+server_selection_timeout = "5s" # Server selection timeout
+connect_timeout = "5s"          # Connection establishment timeout
+socket_timeout = "30s"          # Socket operation timeout
+heartbeat_interval = "10s"      # Heartbeat frequency
+auth_enabled = true             # Enable authentication on the proxy level
 ping = true
 
 # =====================================
@@ -38,8 +39,8 @@ metrics_enabled = true
 # =====================================
 # Network Settings
 # =====================================
-network = "tcp4"  # tcp4, tcp6, unix
-unlink = false    # Remove unix socket file on exit
+network = "tcp4" # tcp4, tcp6, unix
+unlink = false   # Remove unix socket file on exit
 
 # =====================================
 # Database Configurations
@@ -62,9 +63,9 @@ production_app = { connection_string = "mongodb+srv://${PROD_USER}:${PROD_PASS}@
 # Example 2: Analytics database (individual settings)
 [databases.analytics_db]
 connection_string = "mongodb://analytics-cluster.mongodb.net:27017/analytics"
-max_pool_size = 50                    # Override default for high-traffic database
-min_pool_size = 10                    # Override default
-socket_timeout = "60s"                # Longer timeout for this DB
+max_pool_size = 50                                                            # Override default for high-traffic database
+min_pool_size = 10                                                            # Override default
+socket_timeout = "60s"                                                        # Longer timeout for this DB
 
 # Example 3: Local development database (using individual fields)
 [databases.local_dev]
@@ -96,37 +97,6 @@ pool_mode = "statement"
 connection_string = "mongodb://${DEFAULT_MONGO_HOST:-localhost}:27017/default"
 max_pool_size = 20
 max_db_connections = 40
-
-# =====================================
-# User Configurations
-# =====================================
-[users]
-# User-specific settings and authentication
-# Supports multiple password formats: plaintext, md5, scram-sha-256
-
-# Application user with transaction support
-[users.app_user]
-password = "md5c6f4ee6d19b6e0c7c62b6c78e66b8e9a"  # MD5 hash of "app_password"
-pool_mode = "transaction"  # Override global pool mode
-max_user_connections = 50  # Per-user connection limit
-
-# Analytics user - read-heavy workload
-[users.analytics_user]
-password = "SCRAM-SHA-256$4096:salt$hash:serverkey"  # SCRAM-SHA-256 hash
-pool_mode = "session"
-max_user_connections = 30
-
-# Read-only reporting user
-[users.readonly_user]
-password = "md5e1671797c52e15f763380b45e841ec32"  # MD5 hash of "readonly_pass"
-pool_mode = "statement"  # Most restrictive mode - no transaction state
-max_user_connections = 100
-
-# Admin user with full access
-[users.admin]
-password = "${ADMIN_PASSWORD_HASH}"  # From environment variable
-pool_mode = "session"
-max_user_connections = 10
 
 # =====================================
 # Environment Variable Examples

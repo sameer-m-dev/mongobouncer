@@ -31,24 +31,174 @@ services:
     depends_on:
       - prometheus
     restart: always
-  mongo6-1:
+
+  # MongoDB 6 Single-Node Replica Set
+  mongo6-rs:
     image: "mongo:6.0"
     ports:
       - "27018:27017"
     networks:
       - mongobouncernet
-  mongo6-2:
-    image: "mongo:6.0"
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    environment:
+      - MONGO_INITDB_ROOT_USERNAME=admin
+      - MONGO_INITDB_ROOT_PASSWORD=admin123
+    volumes:
+      - .docker-compose-data/mongo6-rs:/data/db
+      - ./config/mongodb/mongodb-keyfile:/etc/mongodb-keyfile:ro
+    command:
+      [
+        "mongod",
+        "--replSet",
+        "rs0",
+        "--bind_ip_all",
+        "--auth",
+        "--keyFile",
+        "/etc/mongodb-keyfile",
+      ]
+    healthcheck:
+      test: ["CMD", "mongosh", "--eval", "db.adminCommand('ping')"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 30s
+    restart: always
+
+  # MongoDB 8 Single-Node Replica Set
+  mongo8-rs:
+    image: "mongo:8.0"
     ports:
       - "27019:27017"
     networks:
       - mongobouncernet
-  mongo6-3:
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    environment:
+      - MONGO_INITDB_ROOT_USERNAME=admin
+      - MONGO_INITDB_ROOT_PASSWORD=admin123
+    volumes:
+      - .docker-compose-data/mongo8-rs:/data/db
+      - ./config/mongodb/mongodb-keyfile:/etc/mongodb-keyfile:ro
+    command:
+      [
+        "mongod",
+        "--replSet",
+        "rs1",
+        "--bind_ip_all",
+        "--auth",
+        "--keyFile",
+        "/etc/mongodb-keyfile",
+      ]
+    healthcheck:
+      test: ["CMD", "mongosh", "--eval", "db.adminCommand('ping')"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 30s
+    restart: always
+
+  # MongoDB 6 Standalone with Auth
+  mongo6-standalone:
     image: "mongo:6.0"
     ports:
       - "27020:27017"
     networks:
       - mongobouncernet
+    environment:
+      - MONGO_INITDB_ROOT_USERNAME=admin
+      - MONGO_INITDB_ROOT_PASSWORD=admin123
+    volumes:
+      - .docker-compose-data/mongo6-standalone:/data/db
+    command: ["mongod", "--bind_ip_all", "--auth"]
+    healthcheck:
+      test: ["CMD", "mongosh", "--eval", "db.adminCommand('ping')"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 30s
+    restart: always
+
+  # MongoDB 8 Standalone with Auth
+  mongo8-standalone:
+    image: "mongo:8.0"
+    ports:
+      - "27021:27017"
+    networks:
+      - mongobouncernet
+    environment:
+      - MONGO_INITDB_ROOT_USERNAME=admin
+      - MONGO_INITDB_ROOT_PASSWORD=admin123
+    volumes:
+      - .docker-compose-data/mongo8-standalone:/data/db
+    command: ["mongod", "--bind_ip_all", "--auth"]
+    healthcheck:
+      test: ["CMD", "mongosh", "--eval", "db.adminCommand('ping')"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 30s
+    restart: always
+
+  # MongoDB 6 Replica Set Initializer
+  mongo6-rs-init:
+    image: "mongo:6.0"
+    networks:
+      - mongobouncernet
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    volumes:
+      - ./config/mongodb/init-replica-set-6.sh:/init-replica-set-6.sh:ro
+    command: ["bash", "/init-replica-set-6.sh"]
+    depends_on:
+      mongo6-rs:
+        condition: service_healthy
+    restart: "no"
+
+  # MongoDB 8 Replica Set Initializer
+  mongo8-rs-init:
+    image: "mongo:8.0"
+    networks:
+      - mongobouncernet
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    volumes:
+      - ./config/mongodb/init-replica-set-8.sh:/init-replica-set-8.sh:ro
+    command: ["bash", "/init-replica-set-8.sh"]
+    depends_on:
+      mongo8-rs:
+        condition: service_healthy
+    restart: "no"
+
+  # MongoDB 6 Standalone Initializer
+  mongo6-standalone-init:
+    image: "mongo:6.0"
+    networks:
+      - mongobouncernet
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    volumes:
+      - ./config/mongodb/init-standalone-6.sh:/init-standalone-6.sh:ro
+    command: ["bash", "/init-standalone-6.sh"]
+    depends_on:
+      mongo6-standalone:
+        condition: service_healthy
+    restart: "no"
+
+  # MongoDB 8 Standalone Initializer
+  mongo8-standalone-init:
+    image: "mongo:8.0"
+    networks:
+      - mongobouncernet
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    volumes:
+      - ./config/mongodb/init-standalone-8.sh:/init-standalone-8.sh:ro
+    command: ["bash", "/init-standalone-8.sh"]
+    depends_on:
+      mongo8-standalone:
+        condition: service_healthy
+    restart: "no"
 
 networks:
   mongobouncernet:

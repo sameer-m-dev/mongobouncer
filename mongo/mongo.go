@@ -134,8 +134,9 @@ func createPoolMonitor(log *zap.Logger, metrics *util.MetricsClient, databaseNam
 					zap.Int64("checkout_failures", poolStats.checkoutFailures))
 			}
 
-			// Update metrics
-			if metrics != nil {
+			// Update metrics - only for non-dynamic database names
+			// Dynamic database names will be handled by operation-level metrics
+			if metrics != nil && databaseName != "dynamic" {
 				tags := []string{fmt.Sprintf("database:%s", databaseName)}
 
 				// Calculate utilization ratio
@@ -179,6 +180,11 @@ func extractDatabaseName(opts *options.ClientOptions) string {
 			if strings.Contains(dbPart, "?") {
 				dbPart = strings.Split(dbPart, "?")[0]
 			}
+			// Check if this looks like a host:port instead of a database name
+			// If it contains a colon and no dots, it's likely host:port
+			if strings.Contains(dbPart, ":") && !strings.Contains(dbPart, ".") {
+				return "default"
+			}
 			if dbPart != "" {
 				return dbPart
 			}
@@ -198,7 +204,12 @@ func Connect(log *zap.Logger, metrics *util.MetricsClient, opts *options.ClientO
 	healthStats := &HealthStats{}
 
 	// Add pool monitor to client options
+	// For wildcard routes, we'll use a dynamic approach to track database names
 	databaseName := extractDatabaseName(opts)
+	if databaseName == "default" || databaseName == "" {
+		// For wildcard routes, we'll track database names dynamically
+		databaseName = "dynamic"
+	}
 	poolMonitor := createPoolMonitor(log, metrics, databaseName, poolStats)
 	opts = opts.SetPoolMonitor(poolMonitor)
 
@@ -409,6 +420,38 @@ func (m *Mongo) Close() {
 	}
 }
 
+// UpdatePoolMetricsForDatabase updates pool metrics for a specific database
+func (m *Mongo) UpdatePoolMetricsForDatabase(databaseName string) {
+	if m.metrics == nil || m.poolStats == nil {
+		return
+	}
+
+	m.poolStats.mu.RLock()
+	defer m.poolStats.mu.RUnlock()
+
+	tags := []string{fmt.Sprintf("database:%s", databaseName)}
+
+	// Calculate utilization ratio
+	utilization := 0.0
+	if m.poolStats.maxPoolSize > 0 {
+		utilization = float64(m.poolStats.activeConnections) / float64(m.poolStats.maxPoolSize)
+	}
+
+	m.log.Debug("Updating database-specific pool metrics",
+		zap.String("database", databaseName),
+		zap.Int64("active_connections", m.poolStats.activeConnections),
+		zap.Int64("max_pool_size", m.poolStats.maxPoolSize),
+		zap.Float64("utilization", utilization))
+
+	_ = m.metrics.Gauge("mongodb_pool_active_connections", float64(m.poolStats.activeConnections), tags, 1)
+	_ = m.metrics.Gauge("mongodb_pool_total_connections", float64(m.poolStats.totalConnections), tags, 1)
+	_ = m.metrics.Gauge("mongodb_pool_max_connections", float64(m.poolStats.maxPoolSize), tags, 1)
+	_ = m.metrics.Gauge("mongodb_pool_utilization_ratio", utilization, tags, 1)
+	_ = m.metrics.Gauge("mongodb_pool_checkout_total", float64(m.poolStats.checkoutCount), tags, 1)
+	_ = m.metrics.Gauge("mongodb_pool_checkin_total", float64(m.poolStats.checkinCount), tags, 1)
+	_ = m.metrics.Gauge("mongodb_pool_checkout_failures_total", float64(m.poolStats.checkoutFailures), tags, 1)
+}
+
 func (m *Mongo) RoundTrip(msg *Message, tags []string) (_ *Message, err error) {
 	m.mu.RLock()
 	defer m.mu.RUnlock()
@@ -505,6 +548,10 @@ func (m *Mongo) RoundTrip(msg *Message, tags []string) (_ *Message, err error) {
 				}
 			}
 			_ = m.metrics.Incr("server_selection", []string{fmt.Sprintf("database:%s", databaseName)}, 1)
+			
+			// Update pool metrics with the actual database name
+			// This ensures pool metrics show the actual database names instead of hardcoded values
+			m.UpdatePoolMetricsForDatabase(databaseName)
 		}
 
 		conn, err := m.checkoutConnection(server)

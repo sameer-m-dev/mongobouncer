@@ -1,9 +1,11 @@
 package mongo
 
 import (
+	"fmt"
 	"time"
 
 	"go.mongodb.org/mongo-driver/bson"
+	"go.mongodb.org/mongo-driver/bson/primitive"
 	"go.mongodb.org/mongo-driver/mongo/description"
 	"go.mongodb.org/mongo-driver/x/bsonx/bsoncore"
 	"go.mongodb.org/mongo-driver/x/mongo/driver/wiremessage"
@@ -34,7 +36,8 @@ func isMasterDocument(kind description.TopologyKind) (bsoncore.Document, error) 
 	ns := time.Now().UnixNano()
 	ms := ns / 1e6
 	var doc bson.D
-	if kind == description.Single {
+	switch kind {
+	case description.Single:
 		doc = bson.D{
 			{Key: "ismaster", Value: true},
 			{Key: "maxBsonObjectSize", Value: 16777216},                  // $numberInt
@@ -45,23 +48,42 @@ func isMasterDocument(kind description.TopologyKind) (bsoncore.Document, error) 
 			{Key: "maxWireVersion", Value: 8},                            // $numberInt
 			{Key: "minWireVersion", Value: 0},                            // $numberInt
 			{Key: "readOnly", Value: false},
-			{Key: "ok", Value: 1.0}, // $numberDouble
+			{Key: "ok", Value: 1.0},
 		}
-	} else {
-		// IMPORTANT: if not Single, assumes Sharded!
+	case description.Sharded:
 		doc = bson.D{
 			{Key: "ismaster", Value: true},
 			{Key: "msg", Value: "isdbgrid"},
-			{Key: "maxBsonObjectSize", Value: 16777216},                  // $numberInt
-			{Key: "maxMessageSizeBytes", Value: 48000000},                // $numberInt
-			{Key: "maxWriteBatchSize", Value: 100000},                    // $numberInt
-			{Key: "localTime", Value: bson.D{{Key: "$date", Value: ms}}}, // $numberLong
-			{Key: "logicalSessionTimeoutMinutes", Value: 30},             // $numberInt
-			{Key: "maxWireVersion", Value: 8},                            // $numberInt
-			{Key: "minWireVersion", Value: 0},                            // $numberInt
-			{Key: "saslSupportedMechs", Value: bson.A{}},                 // empty (proxy doesn't support auth)
-			{Key: "ok", Value: 1.0},                                      // $numberDouble
+			{Key: "maxBsonObjectSize", Value: 16777216},
+			{Key: "maxMessageSizeBytes", Value: 48000000},
+			{Key: "maxWriteBatchSize", Value: 100000},
+			{Key: "localTime", Value: bson.D{{Key: "$date", Value: ms}}},
+			{Key: "logicalSessionTimeoutMinutes", Value: 30},
+			{Key: "minWireVersion", Value: 0},
+			{Key: "maxWireVersion", Value: 17},
+			{Key: "saslSupportedMechs", Value: bson.A{}},
+			// {Key: "saslSupportedMechs", Value: bson.A{
+			// 	"SCRAM-SHA-1",
+			// 	"SCRAM-SHA-256",
+			// }},
+			{Key: "ok", Value: 1.0},
 		}
+	case description.LoadBalanced:
+		doc = bson.D{
+			{Key: "ismaster", Value: true},
+			{Key: "msg", Value: "isdbgrid"},
+			{Key: "serviceId", Value: primitive.NewObjectID()}, // required for load-balanced mode
+			{Key: "maxBsonObjectSize", Value: 16777216},
+			{Key: "maxMessageSizeBytes", Value: 48000000},
+			{Key: "maxWriteBatchSize", Value: 100000},
+			{Key: "localTime", Value: bson.D{{Key: "$date", Value: ms}}},
+			{Key: "logicalSessionTimeoutMinutes", Value: 30},
+			{Key: "minWireVersion", Value: 0},
+			{Key: "maxWireVersion", Value: 17},
+			{Key: "ok", Value: 1.0},
+		}
+	default:
+		return nil, fmt.Errorf("unsupported topology kind: %v", kind)
 	}
 	return bson.Marshal(doc)
 }

@@ -17,7 +17,7 @@ func TestPoolManager(t *testing.T) {
 	metrics, _ := util.NewMetricsClient(logger, "localhost:9090")
 
 	t.Run("CreateManager", func(t *testing.T) {
-		m := NewManager(logger, metrics, "session", 5, 20, 5, 100)
+		m := NewManager(logger, metrics, "session", 5, 20, 100)
 		assert.NotNil(t, m)
 		assert.Equal(t, SessionMode, m.defaultMode)
 		assert.Equal(t, 5, m.minPoolSize)
@@ -37,13 +37,13 @@ func TestPoolManager(t *testing.T) {
 		}
 
 		for _, tt := range tests {
-			m := NewManager(logger, metrics, tt.mode, 5, 10, 2, 50)
+			m := NewManager(logger, metrics, tt.mode, 5, 10, 50)
 			assert.Equal(t, tt.expected, m.defaultMode)
 		}
 	})
 
 	t.Run("GetPool", func(t *testing.T) {
-		m := NewManager(logger, metrics, "session", 5, 10, 2, 50)
+		m := NewManager(logger, metrics, "session", 5, 10, 50)
 
 		// Get pool for database
 		pool1 := m.GetPool("db1", nil, SessionMode)
@@ -61,7 +61,7 @@ func TestPoolManager(t *testing.T) {
 	})
 
 	t.Run("ClientRegistration", func(t *testing.T) {
-		m := NewManager(logger, metrics, "session", 5, 10, 2, 2) // Max 2 clients
+		m := NewManager(logger, metrics, "session", 5, 10, 2) // Max 2 clients
 
 		// Register clients
 		client1, err := m.RegisterClient("client1", "user1", "db1", SessionMode)
@@ -92,7 +92,7 @@ func TestConnectionPool(t *testing.T) {
 	metrics, _ := util.NewMetricsClient(logger, "localhost:9090")
 
 	t.Run("CheckoutReturn", func(t *testing.T) {
-		m := NewManager(logger, metrics, "session", 1, 2, 1, 10)
+		m := NewManager(logger, metrics, "session", 1, 2, 10)
 		pool := m.GetPool("test", nil, SessionMode)
 
 		// Checkout connection
@@ -114,7 +114,7 @@ func TestConnectionPool(t *testing.T) {
 	})
 
 	t.Run("PoolLimit", func(t *testing.T) {
-		m := NewManager(logger, metrics, "session", 1, 2, 1, 10)
+		m := NewManager(logger, metrics, "session", 1, 2, 10)
 		pool := m.GetPool("test", nil, SessionMode)
 
 		// Checkout max connections
@@ -152,7 +152,7 @@ func TestConnectionPool(t *testing.T) {
 	})
 
 	t.Run("Statistics", func(t *testing.T) {
-		m := NewManager(logger, metrics, "session", 1, 5, 1, 10)
+		m := NewManager(logger, metrics, "session", 1, 5, 10)
 		pool := m.GetPool("test", nil, SessionMode)
 
 		// Initial stats
@@ -187,7 +187,7 @@ func TestPoolModes(t *testing.T) {
 	metrics, _ := util.NewMetricsClient(logger, "localhost:9090")
 
 	t.Run("SessionMode", func(t *testing.T) {
-		m := NewManager(logger, metrics, "session", 2, 10, 2, 10)
+		m := NewManager(logger, metrics, "session", 2, 10, 10)
 
 		// Register client
 		client, err := m.RegisterClient("client1", "user1", "db1", SessionMode)
@@ -213,7 +213,7 @@ func TestPoolModes(t *testing.T) {
 	})
 
 	t.Run("TransactionMode", func(t *testing.T) {
-		m := NewManager(logger, metrics, "transaction", 2, 10, 2, 10)
+		m := NewManager(logger, metrics, "transaction", 2, 10, 10)
 
 		// Register client
 		client, err := m.RegisterClient("client1", "user1", "db1", TransactionMode)
@@ -228,7 +228,7 @@ func TestPoolModes(t *testing.T) {
 	})
 
 	t.Run("StatementMode", func(t *testing.T) {
-		m := NewManager(logger, metrics, "statement", 2, 10, 2, 10)
+		m := NewManager(logger, metrics, "statement", 2, 10, 10)
 
 		// Register client
 		client, err := m.RegisterClient("client1", "user1", "db1", StatementMode)
@@ -246,7 +246,7 @@ func TestConcurrentAccess(t *testing.T) {
 	logger := zap.NewNop()
 	metrics, _ := util.NewMetricsClient(logger, "localhost:9090")
 
-	m := NewManager(logger, metrics, "session", 1, 5, 1, 100)
+	m := NewManager(logger, metrics, "session", 1, 5, 100)
 	pool := m.GetPool("test", nil, SessionMode)
 
 	// Concurrent checkouts and returns

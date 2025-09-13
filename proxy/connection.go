@@ -4,13 +4,14 @@ import (
 	"fmt"
 	"io"
 	"net"
+	"net/url"
 	"runtime/debug"
 	"strings"
 	"time"
 
 	"github.com/sameer-m-dev/mongobouncer/pool"
 	"github.com/sameer-m-dev/mongobouncer/util"
-	"go.mongodb.org/mongo-driver/mongo/options"
+	"go.mongodb.org/mongo-driver/mongo/description"
 	"go.uber.org/zap"
 
 	"github.com/sameer-m-dev/mongobouncer/mongo"
@@ -32,14 +33,18 @@ type connection struct {
 
 	// Context-aware routing fields
 	intendedDatabase string       // The database the client originally wanted to connect to
-	authSource       string       // The authSource from the connection string
 	routeConfig      *RouteConfig // Cached route config for this connection
 
-	// Connection state tracking
-	adminRoute string // Cached admin route for this connection
+	// Client authentication fields
+	clientUsername string // Username from client connection string
+	clientPassword string // Password from client connection string
+	authEnabled    bool   // Whether authentication is enabled
+
+	// Database usage tracking
+	databaseUsed string // The actual database that was used during this connection
 }
 
-func handleConnection(log *zap.Logger, metrics *util.MetricsClient, address string, conn net.Conn, mongoLookup MongoLookup, poolManager *pool.Manager, kill chan interface{}, databaseRouter *DatabaseRouter) {
+func handleConnection(log *zap.Logger, metrics *util.MetricsClient, address string, conn net.Conn, mongoLookup MongoLookup, poolManager *pool.Manager, kill chan interface{}, databaseRouter *DatabaseRouter, authEnabled bool) string {
 	defer func() {
 		if r := recover(); r != nil {
 			log.Error("Connection crashed", zap.String("panic", fmt.Sprintf("%v", r)), zap.String("stack", string(debug.Stack())))
@@ -61,6 +66,7 @@ func handleConnection(log *zap.Logger, metrics *util.MetricsClient, address stri
 		poolManager:    poolManager,
 		databaseRouter: databaseRouter,
 		clientID:       clientID,
+		authEnabled:    authEnabled,
 	}
 
 	// Extract target database from the client's connection string for smart admin routing
@@ -94,6 +100,9 @@ func handleConnection(log *zap.Logger, metrics *util.MetricsClient, address stri
 	}()
 
 	c.processMessages()
+
+	// Return the database that was actually used during this connection
+	return c.databaseUsed
 }
 
 func (c *connection) processMessages() {
@@ -255,53 +264,58 @@ func (c *connection) readWireMessage() ([]byte, error) {
 }
 
 func (c *connection) roundTrip(msg *mongo.Message, isMaster bool, tags []string) (*mongo.Message, error) {
-	// Extract database name for pool routing
+	// Extract database name for pool routing (needed for authentication)
 	databaseName := c.extractDatabaseName(msg.Op)
 
-	// Get MongoDB client using context-aware routing
+	// Handle isMaster commands with authentication and mocked response
+	if isMaster {
+		// Extract and validate credentials from appName parameter in isMaster calls
+		if err := c.validateCredentialsFromAppName(msg, databaseName); err != nil {
+			c.log.Error("AppName credential validation failed", zap.Error(err))
+			return nil, fmt.Errorf("authentication failed: %v", err)
+		}
+
+		requestID := msg.Op.RequestID()
+		c.log.Debug("Mocking isMaster response", zap.Int32("request_id", requestID))
+		// Always respond as a shard router (mongos) to emulate the behavior you described
+		return mongo.IsMasterResponse(requestID, description.Sharded)
+	}
+
+	// For non-isMaster operations, authentication should already be validated
+	// during the initial isMaster handshake
+
+	// Get MongoDB client using simplified routing
 	var mongoClient *mongo.Mongo
 	if c.databaseRouter != nil {
-		// Context-aware routing: determine the target database
-		targetDatabase := c.determineTargetDatabase(databaseName, msg.Op)
+		// Simple routing: use the database name directly
+		targetDatabase := databaseName
 
 		// Get route for the target database
 		route, err := c.databaseRouter.GetRoute(targetDatabase)
 		if err != nil {
-			// If it's a dynamic admin route, create it
-			if strings.HasPrefix(targetDatabase, "admin_") {
-				route, err = c.createDynamicAdminRoute(targetDatabase)
-				if err != nil {
-					return nil, fmt.Errorf("database %s is not supported: %v", targetDatabase, err)
-				}
-			} else {
-				return nil, fmt.Errorf("database %s is not supported: %v", targetDatabase, err)
+			// If admin database is not configured but admin command is attempted, reject with proper error
+			if targetDatabase == "admin" {
+				c.log.Error("Admin command attempted but no admin database configured",
+					zap.String("target_database", targetDatabase),
+					zap.String("operation", msg.Op.String()),
+					zap.Error(err))
+				return nil, fmt.Errorf("admin database is not configured but admin command was attempted: %v", err)
 			}
+			return nil, fmt.Errorf("database %s is not supported: %v", targetDatabase, err)
 		}
 
 		// Cache the route config for this connection
-		// Don't cache for admin operations - we want to update when we see the actual target database
-		if c.routeConfig == nil && targetDatabase != "admin" {
+		if c.routeConfig == nil {
 			c.routeConfig = route
 			c.intendedDatabase = targetDatabase
 			c.log.Debug("Cached route config for connection",
 				zap.String("intended_database", targetDatabase),
-				zap.String("current_operation_db", databaseName),
-				zap.String("auth_source", c.authSource))
-		} else if targetDatabase == "admin" {
-			c.log.Debug("Skipping cache for admin operation",
-				zap.String("current_operation_db", databaseName),
-				zap.String("reason", "wait_for_target_database"))
+				zap.String("current_operation_db", databaseName))
 		}
 
 		mongoClient = route.MongoClient
 	} else {
 		return nil, fmt.Errorf("mongo client not found for address: %s", c.address)
-	}
-
-	if isMaster {
-		requestID := msg.Op.RequestID()
-		c.log.Debug("Non-proxied ismaster response", zap.Int32("request_id", requestID))
-		return mongo.IsMasterResponse(requestID, mongoClient.Description().Kind)
 	}
 
 	// Use pool manager for connection pooling, fallback to direct client if needed
@@ -451,15 +465,13 @@ func (c *connection) extractTargetDatabaseFromFirstMessage() {
 	// We need to parse this from the initial handshake message
 	targetDatabase := c.extractTargetDatabaseFromHandshake(firstMsgOp)
 
-	if targetDatabase != "" && targetDatabase != "admin" {
+	if targetDatabase != "" {
 		c.intendedDatabase = targetDatabase
-		c.determineAdminRoute()
-		c.log.Debug("Determined admin route from handshake",
+		c.log.Debug("Determined target database from handshake",
 			zap.String("intended_database", c.intendedDatabase),
-			zap.String("admin_route", c.adminRoute),
 			zap.String("client_id", c.clientID))
 	} else {
-		c.log.Debug("Could not determine target database from handshake, will wait for non-admin operation",
+		c.log.Debug("Could not determine target database from handshake, will wait for operation",
 			zap.String("client_id", c.clientID))
 	}
 
@@ -610,26 +622,42 @@ func (c *connection) extractDatabaseName(op mongo.Operation) string {
 		zap.String("database_name", op.DatabaseName()),
 		zap.String("operation_string", op.String()))
 
+	var databaseName string
+
 	if collection != "" {
 		// Collection names are in format "database.collection"
 		parts := strings.SplitN(collection, ".", 2)
 		if len(parts) >= 2 {
+			databaseName = parts[0]
 			c.log.Debug("Extracted database name from collection",
 				zap.String("collection", collection),
-				zap.String("database", parts[0]))
-			return parts[0]
+				zap.String("database", databaseName))
 		}
 	}
 
 	// Use the new DatabaseName method as fallback
-	if dbName := op.DatabaseName(); dbName != "" {
-		c.log.Debug("Extracted database name from operation", zap.String("database", dbName))
-		return dbName
+	if databaseName == "" {
+		if dbName := op.DatabaseName(); dbName != "" {
+			databaseName = dbName
+			c.log.Debug("Extracted database name from operation", zap.String("database", databaseName))
+		}
 	}
 
 	// Default fallback
-	c.log.Debug("Using default database name", zap.String("collection", collection))
-	return "default"
+	if databaseName == "" {
+		databaseName = "default"
+		c.log.Debug("Using default database name", zap.String("collection", collection))
+	}
+
+	// Track the database name for this connection (only for non-admin operations)
+	if databaseName != "admin" && databaseName != "" {
+		c.databaseUsed = databaseName
+		c.log.Debug("Updated connection database tracking",
+			zap.String("database_used", c.databaseUsed),
+			zap.String("current_operation_db", databaseName))
+	}
+
+	return databaseName
 }
 
 // determineTargetDatabase determines which database this operation should be routed to
@@ -638,144 +666,25 @@ func (c *connection) determineTargetDatabase(currentDatabase string, op mongo.Op
 	if c.routeConfig != nil {
 		// If the current operation is for a different database than what we have cached,
 		// we need to handle this properly
-		if currentDatabase != "admin" && currentDatabase != c.intendedDatabase {
-			// This is a non-admin operation for a different database
-			// We should route to the actual database, not use the cached admin route
-			c.log.Debug("Non-admin operation for different database than cached",
+		if currentDatabase != c.intendedDatabase {
+			// This is an operation for a different database
+			// We should route to the actual database, not use the cached route
+			c.log.Debug("Operation for different database than cached",
 				zap.String("current_db", currentDatabase),
 				zap.String("cached_intended_db", c.intendedDatabase))
 			return currentDatabase
 		}
-		// For admin operations or operations matching our cached database, use cached route
+		// For operations matching our cached database, use cached route
 		return c.intendedDatabase
 	}
 
-	// If the current operation is not on admin, use it as the intended database
-	if currentDatabase != "admin" {
-		c.intendedDatabase = currentDatabase
+	// Use the current database as the intended database
+	c.intendedDatabase = currentDatabase
 
-		// Now that we know the intended database, determine the admin route
-		c.determineAdminRoute()
-
-		c.log.Debug("Set intended database from non-admin operation",
-			zap.String("intended_database", currentDatabase),
-			zap.String("current_operation_db", currentDatabase),
-			zap.String("admin_route", c.adminRoute))
-		return currentDatabase
-	}
-
-	// For admin operations, we need to determine the correct MongoDB instance
-	// Strategy: Route admin operations to the same MongoDB instance as the target database
-
-	// If we have an intended database, use the cached admin route
-	if c.intendedDatabase != "" && c.adminRoute != "" {
-		c.log.Debug("Using cached admin route for admin operation",
-			zap.String("current_db", currentDatabase),
-			zap.String("intended_db", c.intendedDatabase),
-			zap.String("admin_route", c.adminRoute),
-			zap.String("reason", "cached_admin_route"))
-		return c.adminRoute
-	}
-
-	// For admin operations when we don't know the intended database yet,
-	// try to extract it from the operation's BSON payload
-	if c.intendedDatabase == "" {
-		// Try to extract target database from the current operation
-		targetDatabase := c.extractTargetDatabaseFromBSON(op)
-		if targetDatabase != "" {
-			c.intendedDatabase = targetDatabase
-			c.determineAdminRoute()
-			c.log.Debug("Extracted target database from BSON for admin operation",
-				zap.String("target_database", targetDatabase),
-				zap.String("admin_route", c.adminRoute))
-			return c.adminRoute
-		}
-
-		// Fallback: use the first configured database as a heuristic
-		firstDatabase := c.getFirstConfiguredDatabase()
-		if firstDatabase != "" {
-			c.intendedDatabase = firstDatabase
-			c.determineAdminRoute()
-			c.log.Debug("Using first configured database as heuristic for admin operation",
-				zap.String("heuristic_database", firstDatabase),
-				zap.String("admin_route", c.adminRoute))
-			return c.adminRoute
-		}
-	}
-
-	// If we still don't have an intended database, we can't route admin operations
-	c.log.Warn("Admin operation without known intended database",
-		zap.String("current_db", currentDatabase),
-		zap.String("intended_db", c.intendedDatabase))
+	c.log.Debug("Set intended database from operation",
+		zap.String("intended_database", currentDatabase),
+		zap.String("current_operation_db", currentDatabase))
 	return currentDatabase
-}
-
-// determineAdminRoute determines the admin route based on the intended database's host
-func (c *connection) determineAdminRoute() {
-	if c.intendedDatabase == "" || c.databaseRouter == nil {
-		return
-	}
-
-	// Get the route for the intended database
-	targetRoute, err := c.databaseRouter.GetRoute(c.intendedDatabase)
-	if err != nil {
-		c.log.Debug("Could not find route for intended database",
-			zap.String("intended_database", c.intendedDatabase),
-			zap.Error(err))
-		return
-	}
-
-	// Extract host from the target database's connection string
-	host, port := c.extractHostFromRoute(targetRoute)
-	if host == "" || port == "" {
-		c.log.Debug("Could not extract host/port from target route",
-			zap.String("intended_database", c.intendedDatabase),
-			zap.String("connection_string", targetRoute.ConnectionString))
-		return
-	}
-
-	// Create a temporary admin route name based on the host:port
-	// This will be used to route admin operations to the same MongoDB instance
-	c.adminRoute = fmt.Sprintf("admin_%s_%s", host, port)
-
-	c.log.Debug("Determined admin route for intended database",
-		zap.String("intended_database", c.intendedDatabase),
-		zap.String("host", host),
-		zap.String("port", port),
-		zap.String("admin_route", c.adminRoute))
-}
-
-// findAdminRouteForTarget finds the correct admin route based on the target database's host
-// This implements the user's idea: route admin operations to the same MongoDB instance as the target database
-func (c *connection) findAdminRouteForTarget(targetRoute *RouteConfig) string {
-	// Extract host from the connection string
-	host, port := c.extractHostFromRoute(targetRoute)
-	if host == "" || port == "" {
-		c.log.Debug("Could not extract host/port from target route",
-			zap.String("connection_string", targetRoute.ConnectionString))
-		return ""
-	}
-
-	// Look for a database configuration that matches this host:port
-	// We'll search through all configured databases to find one that matches
-	if c.databaseRouter != nil {
-		// Try to find a route that uses the same host:port
-		// This could be an exact match or a wildcard pattern
-		adminRoute := c.findMatchingAdminRoute(host, port)
-		if adminRoute != "" {
-			c.log.Debug("Found matching admin route for host",
-				zap.String("host", host),
-				zap.String("port", port),
-				zap.String("admin_route", adminRoute))
-			return adminRoute
-		}
-	}
-
-	c.log.Debug("No matching admin route found for host",
-		zap.String("host", host),
-		zap.String("port", port))
-
-	return ""
 }
 
 // extractHostFromRoute extracts host and port from a route configuration
@@ -849,106 +758,146 @@ func (c *connection) extractHostAndPort(hostPort string) (string, string) {
 	return host, port
 }
 
-// findMatchingAdminRoute finds a database route that matches the given host:port
-func (c *connection) findMatchingAdminRoute(targetHost, targetPort string) string {
-	// This is a simplified implementation that looks for exact host:port matches
-	// In a more sophisticated implementation, we could:
-	// 1. Look for wildcard patterns that match the host
-	// 2. Handle hostname resolution
-	// 3. Support multiple hosts in connection strings
-
-	// For now, we'll look for routes that use the same host:port combination
-	// and return the first one we find
-
-	// This would require access to the database router's internal routes
-	// For now, we'll implement a basic version that tries common patterns
-
-	// Try to find a route that matches this host:port
-	// We'll look for patterns like "*_port" or exact host matches
-
-	// Try port-based wildcard first
-	portWildcard := fmt.Sprintf("*_%s", targetPort)
-	if c.databaseRouter != nil {
-		if _, err := c.databaseRouter.GetRoute(portWildcard); err == nil {
-			return portWildcard
-		}
-	}
-
-	// Try host-based wildcard
-	hostWildcard := fmt.Sprintf("*_%s", targetHost)
-	if c.databaseRouter != nil {
-		if _, err := c.databaseRouter.GetRoute(hostWildcard); err == nil {
-			return hostWildcard
-		}
-	}
-
-	return ""
-}
-
-// createDynamicAdminRoute creates a dynamic admin route based on the admin route name
-func (c *connection) createDynamicAdminRoute(adminRouteName string) (*RouteConfig, error) {
-	// Parse the admin route name: admin_host_port
-	// Example: admin_localhost_27017
-	parts := strings.Split(adminRouteName, "_")
-	if len(parts) != 3 || parts[0] != "admin" {
-		return nil, fmt.Errorf("invalid admin route name: %s", adminRouteName)
-	}
-
-	host := parts[1]
-	port := parts[2]
-
-	// Create a connection string for the admin database on the same host:port
-	connectionString := fmt.Sprintf("mongodb://%s:%s/admin", host, port)
-
-	c.log.Debug("Creating dynamic admin route",
-		zap.String("admin_route", adminRouteName),
-		zap.String("host", host),
-		zap.String("port", port),
-		zap.String("connection_string", connectionString))
-
-	// Create MongoDB client options
-	opts := options.Client().ApplyURI(connectionString)
-
-	// Create MongoDB client
-	mongoClient, err := mongo.Connect(c.log, c.metrics, opts, false) // Don't ping during creation
+// extractCredentialsFromConnectionString extracts username and password from MongoDB connection string
+func (c *connection) extractCredentialsFromConnectionString(connStr string) (username, password string, err error) {
+	// Parse the connection string
+	parsedURL, err := url.Parse(connStr)
 	if err != nil {
-		return nil, fmt.Errorf("failed to create admin client for %s: %v", adminRouteName, err)
+		return "", "", fmt.Errorf("failed to parse connection string: %v", err)
 	}
 
-	// Create route config
-	routeConfig := &RouteConfig{
-		DatabaseName:     adminRouteName,
-		ConnectionString: connectionString,
-		MongoClient:      mongoClient,
-		Label:            fmt.Sprintf("admin-%s-%s", host, port),
+	// Extract username and password from URL
+	if parsedURL.User != nil {
+		username = parsedURL.User.Username()
+		password, _ = parsedURL.User.Password()
 	}
 
-	// Add the route to the database router
-	c.databaseRouter.AddRoute(adminRouteName, routeConfig)
+	c.log.Debug("Extracted credentials from connection string",
+		zap.String("username", username),
+		zap.Bool("has_password", password != ""))
 
-	c.log.Debug("Successfully created dynamic admin route",
-		zap.String("admin_route", adminRouteName),
-		zap.String("host", host),
-		zap.String("port", port))
-
-	return routeConfig, nil
+	return username, password, nil
 }
 
-// getFirstConfiguredDatabase returns the first configured database name as a fallback
-func (c *connection) getFirstConfiguredDatabase() string {
-	if c.databaseRouter == nil {
-		return ""
+// validateCredentialsFromAppName extracts and validates credentials from appName parameter in isMaster calls
+func (c *connection) validateCredentialsFromAppName(msg *mongo.Message, targetDatabase string) error {
+	c.log.Debug("Validating credentials from appName", zap.String("target_database", targetDatabase), zap.Bool("auth_enabled", c.authEnabled))
+
+	// If authentication is disabled, skip validation
+	if !c.authEnabled {
+		c.log.Debug("Authentication is disabled, skipping credential validation")
+		return nil
 	}
 
-	// Get all configured databases from the router
-	// For now, we'll use a simple approach and return "mongobouncer" as the first database
-	// In a more sophisticated implementation, we could iterate through the router's databases
-	return "mongobouncer"
+	// Extract appName from the message
+	appName, err := c.extractAppNameFromMessage(msg)
+	if err != nil {
+		return fmt.Errorf("failed to extract appName: %v", err)
+	}
+
+	if appName == "" {
+		c.log.Debug("No appName found in message, authentication required but not provided")
+		return fmt.Errorf("authentication required: appName parameter must be provided")
+	}
+
+	c.log.Debug("Extracted appName", zap.String("app_name", appName))
+
+	// Parse appName to extract username and password (format: username:password)
+	username, password, err := c.parseAppNameCredentials(appName)
+	if err != nil {
+		c.log.Debug("AppName is not in credential format", zap.Error(err))
+		return fmt.Errorf("invalid appName format: must be 'username:password', got: %s", appName)
+	}
+
+	c.log.Debug("Parsed credentials from appName",
+		zap.String("username", username),
+		zap.Bool("has_password", password != ""))
+
+	// Validate credentials against database configuration
+	if err := c.validateCredentialsAgainstDatabase(username, password, targetDatabase); err != nil {
+		c.log.Error("Credential validation failed", zap.Error(err))
+		return fmt.Errorf("credential validation failed: %v", err)
+	}
+
+	// Store validated credentials for this connection
+	c.clientUsername = username
+	c.clientPassword = password
+
+	c.log.Debug("Credentials validated successfully from appName",
+		zap.String("username", username),
+		zap.String("target_database", targetDatabase))
+
+	return nil
 }
 
-// createDummyResponse creates a proper dummy MongoDB response message
-func (c *connection) createDummyResponse(originalMsg *mongo.Message) *mongo.Message {
-	// Instead of creating a dummy response, let's just return the original message
-	// This will prevent the slice bounds panic while we figure out the proper response format
-	return originalMsg
+// extractAppNameFromMessage extracts appName from isMaster call
+func (c *connection) extractAppNameFromMessage(msg *mongo.Message) (string, error) {
+	opStr := msg.Op.String()
+	c.log.Debug("Analyzing operation string for appName", zap.String("operation_string", opStr))
+
+	// Look for application.name in the operation string
+	if strings.Contains(opStr, "application") && strings.Contains(opStr, "name") {
+		// Extract the appName value - look for "name": "value"
+		start := strings.Index(opStr, "\"name\": \"")
+		if start != -1 {
+			start += 9 // Skip "\"name\": \""
+			end := strings.Index(opStr[start:], "\"")
+			if end != -1 {
+				appName := opStr[start : start+end]
+				c.log.Debug("Extracted appName from isMaster call", zap.String("app_name", appName))
+				return appName, nil
+			}
+		}
+	}
+
+	c.log.Debug("No appName found in isMaster message")
+	return "", nil
+}
+
+// parseAppNameCredentials parses appName string to extract username and password
+func (c *connection) parseAppNameCredentials(appName string) (username, password string, err error) {
+	// Expected format: username:password
+	parts := strings.Split(appName, ":")
+	if len(parts) != 2 {
+		return "", "", fmt.Errorf("appName must be in format 'username:password', got: %s", appName)
+	}
+
+	username = strings.TrimSpace(parts[0])
+	password = strings.TrimSpace(parts[1])
+
+	if username == "" || password == "" {
+		return "", "", fmt.Errorf("username and password cannot be empty")
+	}
+
+	return username, password, nil
+}
+
+// validateCredentialsAgainstDatabase validates credentials against database configuration
+func (c *connection) validateCredentialsAgainstDatabase(username, password, targetDatabase string) error {
+	// Get the route configuration for the target database
+	route, err := c.databaseRouter.GetRoute(targetDatabase)
+	if err != nil {
+		return fmt.Errorf("database %s is not supported: %v", targetDatabase, err)
+	}
+
+	// Extract credentials from the route's connection string
+	routeUsername, routePassword, err := c.extractCredentialsFromConnectionString(route.ConnectionString)
+	if err != nil {
+		return fmt.Errorf("failed to extract route credentials: %v", err)
+	}
+
+	// Validate credentials
+	if username != routeUsername || password != routePassword {
+		c.log.Error("Client credentials do not match route credentials",
+			zap.String("client_username", username),
+			zap.String("route_username", routeUsername),
+			zap.String("target_database", targetDatabase))
+		return fmt.Errorf("authentication failed: invalid credentials")
+	}
+
+	c.log.Debug("Credentials match database configuration",
+		zap.String("username", username),
+		zap.String("target_database", targetDatabase))
+
+	return nil
 }

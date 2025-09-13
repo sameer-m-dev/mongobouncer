@@ -93,7 +93,7 @@ func testConcurrentConnections(numWorkers int) bool {
 	}
 	defer client.Disconnect(context.Background())
 
-	db := client.Database("pool_test")
+	db := client.Database("sameer")
 	coll := db.Collection("test_collection")
 
 	// Clean up

@@ -1,10 +1,10 @@
 #!/bin/bash
 
-for i in {1..10}
+for i in {1..50}
 do
   echo "Inserting run $i"
 
-  mongosh "mongodb://localhost:27017/mongobouncer_test" \
+  mongosh "mongodb://localhost:27017/sameer" \
     --eval "db.testRuns.insertOne({ run: $i })" &
 done
 

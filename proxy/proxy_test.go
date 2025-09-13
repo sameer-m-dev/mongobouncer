@@ -196,7 +196,7 @@ func setupProxies(t *testing.T, startPort int, count int) []*Proxy {
 		}
 		upstreams[address] = upstream
 
-		proxy, err := NewProxy(zap.L(), metrics, "label", "tcp4", address, false, lookup, nil, nil)
+		proxy, err := NewProxy(zap.L(), metrics, "label", "tcp4", address, false, lookup, nil, nil, false)
 		assert.Nil(t, err)
 
 		proxies = append(proxies, proxy)
@@ -273,12 +273,6 @@ func TestHostBasedAdminRouting(t *testing.T) {
 	host, port = c.extractHostFromRoute(testRoute2)
 	assert.Equal(t, "localhost", host)
 	assert.Equal(t, "27018", port)
-
-	// Test admin route finding
-	adminRoute := c.findAdminRouteForTarget(testRoute1)
-	// Since we don't have a matching admin route configured, this should return empty
-	// In a real scenario, you'd configure an admin route like "*_27017" for localhost:27017
-	assert.Equal(t, "", adminRoute)
 
 	// Test determineTargetDatabase with admin operation
 	targetDB := c.determineTargetDatabase("admin", nil)

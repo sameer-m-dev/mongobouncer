@@ -1,0 +1,64 @@
+# MongoBouncer Configuration for MongoDB Replica Sets and Standalone Testing
+# This configuration demonstrates how to use MongoBouncer with the new MongoDB setup
+
+[mongobouncer]
+listen_addr = "0.0.0.0"
+listen_port = 27017
+log_level = "debug"
+pool_mode = "session"
+max_client_conn = 100
+metrics_enabled = true
+metrics_address = "localhost:9090"
+auth_enabled = true
+
+# MongoDB 6 Replica Set Configuration
+[databases.app_prod_rs6]
+connection_string = "mongodb://appuser_rs6:apppass_rs6_123@host.docker.internal:27018/app_prod_rs6?replicaSet=rs0&authSource=admin"
+
+# MongoDB 8 Replica Set Configuration
+[databases.app_prod_rs8]
+connection_string = "mongodb://appuser_rs8:apppass_rs8_123@host.docker.internal:27019/app_prod_rs8?replicaSet=rs1&authSource=admin"
+
+# MongoDB 6 Standalone Configuration  
+[databases.standalone_v6_db]
+connection_string = "mongodb://appuser_s6:apppass_s6_123@host.docker.internal:27020/standalone_v6_db?authSource=admin"
+
+# MongoDB 8 Standalone Configuration  
+[databases.standalone_db]
+connection_string = "mongodb://appuser_s8:apppass_s8_123@host.docker.internal:27021/standalone_db?authSource=admin"
+
+# Test database on MongoDB 6 replica set
+[databases.app_test_rs6]
+connection_string = "mongodb://appuser_rs6:apppass_rs6_123@host.docker.internal:27018/app_test_rs6?replicaSet=rs0&authSource=admin"
+
+# Test database on MongoDB 8 replica set
+[databases.app_test_rs8]
+connection_string = "mongodb://appuser_rs8:apppass_rs8_123@host.docker.internal:27019/app_test_rs8?replicaSet=rs1&authSource=admin"
+
+# Analytics database on MongoDB 6 replica set (using analytics auth source)
+[databases.analytics_rs6]
+connection_string = "mongodb://analytics_rs6:analytics_rs6_123@host.docker.internal:27018/analytics_rs6?replicaSet=rs0&authSource=analytics_rs6"
+
+# Analytics database on MongoDB 8 replica set (using analytics auth source)
+[databases.analytics_rs8]
+connection_string = "mongodb://analytics_rs8:analytics_rs8_123@host.docker.internal:27019/analytics_rs8?replicaSet=rs1&authSource=analytics_rs8"
+
+# Test database on MongoDB 6 standalone
+[databases.test_v6_db]
+connection_string = "mongodb://appuser_s6:apppass_s6_123@host.docker.internal:27020/test_v6_db?authSource=admin"
+
+# Test database on MongoDB 8 standalone
+[databases.test_db]
+connection_string = "mongodb://appuser_s8:apppass_s8_123@host.docker.internal:27021/test_db?authSource=admin"
+
+# Analytics database on MongoDB 6 standalone (using analytics auth source)
+[databases.analytics_s6]
+connection_string = "mongodb://analytics_s6:analytics_s6_123@host.docker.internal:27020/analytics_s6?authSource=analytics_s6"
+
+# Analytics database on MongoDB 8 standalone (using analytics auth source)
+[databases.analytics_s8]
+connection_string = "mongodb://analytics_s8:analytics_s8_123@host.docker.internal:27021/analytics_s8?authSource=analytics_s8"
+
+# Admin database routing - MongoDB 8 RS (port 27019)
+[databases.admin]
+connection_string = "mongodb://admin:admin123@host.docker.internal:27019/admin?authSource=admin"

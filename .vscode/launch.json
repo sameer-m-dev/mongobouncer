@@ -25,5 +25,15 @@
         "${workspaceFolder}/examples/mongobouncer.test.toml",
       ],
     },
+    {
+      "name": "MongoBouncer with Docker Compose",
+      "type": "go",
+      "request": "launch",
+      "program": "${workspaceFolder}/mongobouncer.go",
+      "args": [
+        "--config",
+        "${workspaceFolder}/examples/mongobouncer.docker-compose.toml",
+      ],
+    },
   ]
 }

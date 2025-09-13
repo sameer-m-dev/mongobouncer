@@ -88,7 +88,7 @@ func TestRoundTripProcessError(t *testing.T) {
 		return upstream
 	}
 
-	p, err := proxy.NewProxy(zap.L(), metrics, "label", "tcp4", ":27017", false, lookup, nil, nil)
+	p, err := proxy.NewProxy(zap.L(), metrics, "label", "tcp4", ":27017", false, lookup, nil, nil, false)
 	assert.Nil(t, err)
 
 	go func() {

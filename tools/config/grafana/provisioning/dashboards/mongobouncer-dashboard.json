@@ -2396,21 +2396,6 @@
             "uid": "${DS_PROMETHEUS}"
           },
           "editorMode": "code",
-          "expr": "histogram_quantile(0.95, rate(mongobouncer_pool_connection_wait_duration_seconds_bucket[5m]))",
-          "format": "time_series",
-          "hide": false,
-          "interval": "",
-          "intervalFactor": 1,
-          "legendFormat": "{{database}} - Wait p95",
-          "range": true,
-          "refId": "A"
-        },
-        {
-          "datasource": {
-            "type": "prometheus",
-            "uid": "${DS_PROMETHEUS}"
-          },
-          "editorMode": "code",
           "expr": "histogram_quantile(0.95, rate(mongobouncer_pool_checkout_duration_seconds_bucket[5m]))",
           "format": "time_series",
           "hide": false,

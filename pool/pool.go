@@ -344,7 +344,7 @@ func (m *Manager) ReturnConnection(clientID string, conn *PooledConnection, isEn
 	}
 }
 
-// Checkout gets a connection from the pool (simplified with health check)
+// Checkout gets a connection from the pool
 func (p *ConnectionPool) Checkout(clientID string) (*PooledConnection, error) {
 	p.stats.incrementRequests()
 	start := time.Now()
@@ -354,13 +354,6 @@ func (p *ConnectionPool) Checkout(clientID string) (*PooledConnection, error) {
 		zap.String("client_id", clientID))
 
 	// MongoDB driver handles connection pooling - no need to enforce limits here
-
-	// Check connection health before returning
-	if err := p.checkConnectionHealth(); err != nil {
-		p.stats.incrementFailedRequests()
-		p.stats.incrementConnectionErrors()
-		return nil, fmt.Errorf("connection health check failed: %w", err)
-	}
 
 	// Create a simple pooled connection that just wraps the MongoDB client
 	conn := &PooledConnection{
@@ -584,7 +577,7 @@ func (p *ConnectionPool) updatePoolUtilizationMetrics() {
 	p.stats.mutex.RUnlock()
 
 	tags := []string{fmt.Sprintf("database:%s", p.name)}
-	
+
 	// Since we don't track maxSize anymore, just report active connections
 	_ = p.metrics.Gauge("pool_active_connections", float64(activeConnections), tags, 1)
 }

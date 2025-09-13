@@ -3,6 +3,7 @@ package config
 import (
 	"fmt"
 	"os"
+	"regexp"
 	"strings"
 	"time"
 
@@ -66,12 +67,15 @@ type MongobouncerConfig struct {
 	LogFile    string `toml:"logfile"`
 
 	// Connection pooling (implemented)
-	PoolMode        string `toml:"pool_mode"`
-	MaxClientConn   int    `toml:"max_client_conn"`
+	PoolMode      string `toml:"pool_mode"`
+	MaxClientConn int    `toml:"max_client_conn"`
 
 	// Metrics (implemented)
 	MetricsAddress string `toml:"metrics_address"`
 	MetricsEnabled bool   `toml:"metrics_enabled"`
+
+	// Authentication settings
+	AuthEnabled bool `toml:"auth_enabled"`
 
 	// Network settings (implemented)
 	Network string `toml:"network"`
@@ -117,14 +121,15 @@ func LoadConfig(configPath string, verbose bool) (*Config, error) {
 	// Set default values
 	config := &TOMLConfig{
 		Mongobouncer: MongobouncerConfig{
-			ListenAddr:      "0.0.0.0",
-			ListenPort:      27017,
-			LogLevel:        "info",
-			Network:         "tcp4",
-		PoolMode:        "session",
-		MaxClientConn:   100,
-			MetricsAddress:  "localhost:9090",
-			MetricsEnabled:  true,
+			ListenAddr:     "0.0.0.0",
+			ListenPort:     27017,
+			LogLevel:       "info",
+			Network:        "tcp4",
+			PoolMode:       "session",
+			MaxClientConn:  100,
+			MetricsAddress: "localhost:9090",
+			MetricsEnabled: true,
+			AuthEnabled:    true,
 		},
 		Databases: make(map[string]interface{}),
 		Users:     make(map[string]User),
@@ -222,6 +227,9 @@ func parseRawConfig(rawConfig map[string]interface{}, config *TOMLConfig) error 
 		if ping, ok := mb["ping"].(bool); ok {
 			config.Mongobouncer.Ping = ping
 		}
+		if authEnabled, ok := mb["auth_enabled"].(bool); ok {
+			config.Mongobouncer.AuthEnabled = authEnabled
+		}
 	}
 
 	// Parse databases section
@@ -251,26 +259,212 @@ func parseRawConfig(rawConfig map[string]interface{}, config *TOMLConfig) error 
 	return nil
 }
 
+// validateDatabaseNames checks for conflicting database names/patterns
+func validateDatabaseNames(databases map[string]interface{}, logger *zap.Logger) error {
+	// Check if databases map is empty
+	if len(databases) == 0 {
+		return fmt.Errorf("no databases configured - MongoBouncer cannot run without database configuration")
+	}
+
+	// Track patterns and exact matches to detect conflicts
+	exactMatches := make(map[string]string)     // dbName -> connectionString
+	wildcardPatterns := make(map[string]string) // pattern -> connectionString
+	prefixPatterns := make(map[string]string)   // pattern -> connectionString
+	suffixPatterns := make(map[string]string)   // pattern -> connectionString
+	containsPatterns := make(map[string]string) // pattern -> connectionString
+
+	for dbName, dbConfigInterface := range databases {
+		var connectionString string
+
+		// Extract connection string for comparison
+		switch dbConfig := dbConfigInterface.(type) {
+		case string:
+			connectionString = dbConfig
+		case map[string]interface{}:
+			if connStr, ok := dbConfig["connection_string"].(string); ok && connStr != "" {
+				connectionString = connStr
+			} else {
+				// Build URI from individual fields for comparison
+				host := "localhost"
+				port := 27017
+
+				if h, ok := dbConfig["host"].(string); ok {
+					host = h
+				}
+				if p, ok := dbConfig["port"].(int64); ok {
+					port = int(p)
+				}
+
+				var user, password string
+				if u, ok := dbConfig["user"].(string); ok {
+					user = u
+				}
+				if p, ok := dbConfig["password"].(string); ok {
+					password = p
+				}
+
+				// Build URI
+				if user != "" && password != "" {
+					connectionString = fmt.Sprintf("mongodb://%s:%s@%s:%d", user, password, host, port)
+				} else {
+					connectionString = fmt.Sprintf("mongodb://%s:%d", host, port)
+				}
+
+				// Add database name if specified
+				if dbname, ok := dbConfig["dbname"].(string); ok && dbname != "" {
+					connectionString += "/" + dbname
+				}
+			}
+		}
+
+		// Check for wildcard route conflicts
+		if dbName == "*" {
+			if existing, exists := wildcardPatterns["*"]; exists {
+				return fmt.Errorf("conflicting wildcard routes detected: both routes point to different connections (%s vs %s). Only one wildcard route (*) is allowed",
+					sanitizeURI(existing), sanitizeURI(connectionString))
+			}
+			wildcardPatterns["*"] = connectionString
+			continue
+		}
+
+		// Check for pattern-based conflicts
+		if strings.Contains(dbName, "*") {
+			// Check for conflicts with exact matches
+			for exactName, exactConnStr := range exactMatches {
+				if matchesPattern(exactName, dbName) {
+					return fmt.Errorf("conflicting database routes detected: pattern '%s' matches exact database '%s' but points to different connections (%s vs %s)",
+						dbName, exactName, sanitizeURI(connectionString), sanitizeURI(exactConnStr))
+				}
+			}
+
+			// Check for conflicts with other patterns
+			for pattern, patternConnStr := range prefixPatterns {
+				if patternsConflict(dbName, pattern) {
+					return fmt.Errorf("conflicting database patterns detected: '%s' and '%s' may match the same databases but point to different connections (%s vs %s)",
+						dbName, pattern, sanitizeURI(connectionString), sanitizeURI(patternConnStr))
+				}
+			}
+			for pattern, patternConnStr := range suffixPatterns {
+				if patternsConflict(dbName, pattern) {
+					return fmt.Errorf("conflicting database patterns detected: '%s' and '%s' may match the same databases but point to different connections (%s vs %s)",
+						dbName, pattern, sanitizeURI(connectionString), sanitizeURI(patternConnStr))
+				}
+			}
+			for pattern, patternConnStr := range containsPatterns {
+				if patternsConflict(dbName, pattern) {
+					return fmt.Errorf("conflicting database patterns detected: '%s' and '%s' may match the same databases but point to different connections (%s vs %s)",
+						dbName, pattern, sanitizeURI(connectionString), sanitizeURI(patternConnStr))
+				}
+			}
+
+			// Categorize the pattern
+			if strings.HasPrefix(dbName, "*") && strings.HasSuffix(dbName, "*") {
+				containsPatterns[dbName] = connectionString
+			} else if strings.HasPrefix(dbName, "*") {
+				suffixPatterns[dbName] = connectionString
+			} else if strings.HasSuffix(dbName, "*") {
+				prefixPatterns[dbName] = connectionString
+			} else {
+				containsPatterns[dbName] = connectionString
+			}
+		} else {
+			// Exact match - check for conflicts with patterns
+			for pattern, patternConnStr := range prefixPatterns {
+				if matchesPattern(dbName, pattern) {
+					return fmt.Errorf("conflicting database routes detected: exact database '%s' matches pattern '%s' but points to different connections (%s vs %s)",
+						dbName, pattern, sanitizeURI(connectionString), sanitizeURI(patternConnStr))
+				}
+			}
+			for pattern, patternConnStr := range suffixPatterns {
+				if matchesPattern(dbName, pattern) {
+					return fmt.Errorf("conflicting database routes detected: exact database '%s' matches pattern '%s' but points to different connections (%s vs %s)",
+						dbName, pattern, sanitizeURI(connectionString), sanitizeURI(patternConnStr))
+				}
+			}
+			for pattern, patternConnStr := range containsPatterns {
+				if matchesPattern(dbName, pattern) {
+					return fmt.Errorf("conflicting database routes detected: exact database '%s' matches pattern '%s' but points to different connections (%s vs %s)",
+						dbName, pattern, sanitizeURI(connectionString), sanitizeURI(patternConnStr))
+				}
+			}
+
+			// Check for duplicate exact matches
+			if existing, exists := exactMatches[dbName]; exists {
+				return fmt.Errorf("duplicate database configuration detected: database '%s' is configured multiple times with different connections (%s vs %s)",
+					dbName, sanitizeURI(existing), sanitizeURI(connectionString))
+			}
+
+			exactMatches[dbName] = connectionString
+		}
+	}
+
+	logger.Info("Database configuration validation passed",
+		zap.Int("exact_matches", len(exactMatches)),
+		zap.Int("prefix_patterns", len(prefixPatterns)),
+		zap.Int("suffix_patterns", len(suffixPatterns)),
+		zap.Int("contains_patterns", len(containsPatterns)),
+		zap.Bool("has_wildcard", len(wildcardPatterns) > 0))
+
+	return nil
+}
+
+// matchesPattern checks if a database name matches a wildcard pattern
+func matchesPattern(dbName, pattern string) bool {
+	// Convert pattern to regex
+	regexPattern := strings.ReplaceAll(pattern, "*", ".*")
+	matched, err := regexp.MatchString("^"+regexPattern+"$", dbName)
+	if err != nil {
+		return false
+	}
+	return matched
+}
+
+// patternsConflict checks if two patterns could potentially match the same databases
+func patternsConflict(pattern1, pattern2 string) bool {
+	// Simple heuristic: if both patterns have wildcards in similar positions,
+	// they might conflict. This is a conservative check.
+
+	// Convert patterns to regex
+	regex1 := strings.ReplaceAll(pattern1, "*", ".*")
+	regex2 := strings.ReplaceAll(pattern2, "*", ".*")
+
+	// Test with some common database name patterns to see if they overlap
+	testNames := []string{
+		"test", "prod", "staging", "dev",
+		"test_db", "prod_db", "staging_db", "dev_db",
+		"app_test", "app_prod", "app_staging", "app_dev",
+		"test_app", "prod_app", "staging_app", "dev_app",
+		"myapp_test", "myapp_prod", "myapp_staging", "myapp_dev",
+	}
+
+	matches1 := 0
+	matches2 := 0
+
+	for _, testName := range testNames {
+		if matched, _ := regexp.MatchString("^"+regex1+"$", testName); matched {
+			matches1++
+		}
+		if matched, _ := regexp.MatchString("^"+regex2+"$", testName); matched {
+			matches2++
+		}
+	}
+
+	// If both patterns match a significant number of test names, they might conflict
+	return matches1 > 0 && matches2 > 0 && matches1 == matches2
+}
+
 // buildClients creates client configurations from the TOML config
 func buildClients(config *TOMLConfig, logger *zap.Logger) ([]client, error) {
 	var clients []client
 
-	// If no databases configured, create a default one
+	// Validate that databases are configured
 	if len(config.Databases) == 0 {
-		// Create default local database connection
-		opts := options.Client().ApplyURI("mongodb://localhost:27017")
+		return nil, fmt.Errorf("no databases configured - MongoBouncer cannot run without database configuration")
+	}
 
-		// Create listening address
-		address := fmt.Sprintf("%s:%d", config.Mongobouncer.ListenAddr, config.Mongobouncer.ListenPort)
-
-		clients = append(clients, client{
-			address: address,
-			label:   "default",
-			opts:    opts,
-		})
-
-		logger.Info("No databases configured, using default local MongoDB")
-		return clients, nil
+	// Validate database name conflicts
+	if err := validateDatabaseNames(config.Databases, logger); err != nil {
+		return nil, err
 	}
 
 	// For TOML config, we typically have one proxy listening address but multiple backend databases
@@ -476,19 +670,19 @@ func (c *Config) applyMongoDBClientSettings(opts *options.ClientOptions, dbName 
 
 	// Set defaults ONLY if not configured by user
 	if maxPoolSize == 0 {
-		maxPoolSize = 20 // Only use default if user didn't provide a value
+		maxPoolSize = 10 // Only use default if user didn't provide a value
 	}
 	if minPoolSize == 0 {
-		minPoolSize = 3 // Only use default if user didn't provide a value
+		minPoolSize = 1 // Only use default if user didn't provide a value
 	}
 	if maxConnIdleTime == 0 {
 		maxConnIdleTime = 30 * time.Second // Only use default if user didn't provide a value
 	}
 	if serverSelectionTimeout == 0 {
-		serverSelectionTimeout = 5 * time.Second // Only use default if user didn't provide a value
+		serverSelectionTimeout = 30 * time.Second // Only use default if user didn't provide a value
 	}
 	if connectTimeout == 0 {
-		connectTimeout = 5 * time.Second // Only use default if user didn't provide a value
+		connectTimeout = 30 * time.Second // Only use default if user didn't provide a value
 	}
 	if socketTimeout == 0 {
 		socketTimeout = 30 * time.Second // Only use default if user didn't provide a value
@@ -604,14 +798,8 @@ func (c *Config) Proxies(log *zap.Logger) ([]*proxy.Proxy, error) {
 			// Use structured config
 			connectionString := fmt.Sprintf("mongodb://%s:%d/%s", dbConfig.Host, dbConfig.Port, dbConfig.DBName)
 			opts := options.Client().ApplyURI(connectionString)
-			// Add robust connection pool settings for high-concurrency scenarios
-			opts = opts.SetMaxPoolSize(20)                         // Slightly higher than MongoBouncer's max_pool_size (10)
-			opts = opts.SetMinPoolSize(3)                          // Match MongoBouncer's min_pool_size
-			opts = opts.SetMaxConnIdleTime(30 * time.Second)       // Keep connections alive longer
-			opts = opts.SetServerSelectionTimeout(5 * time.Second) // Shorter server selection timeout
-			opts = opts.SetConnectTimeout(5 * time.Second)         // Shorter connection timeout
-			opts = opts.SetSocketTimeout(30 * time.Second)         // Longer socket timeout
-			opts = opts.SetHeartbeatInterval(10 * time.Second)     // More frequent heartbeats
+			// Apply MongoDB client pool settings from config
+			opts = c.applyMongoDBClientSettings(opts, dbName, &dbConfig)
 			mongoClient, err = mongo.Connect(log, c.metrics, opts, c.ping)
 			if err != nil {
 				return nil, fmt.Errorf("failed to connect to database %s: %v", dbName, err)
@@ -657,7 +845,7 @@ func (c *Config) Proxies(log *zap.Logger) ([]*proxy.Proxy, error) {
 
 	var proxies []*proxy.Proxy
 	for _, client := range c.clients {
-		p, err := proxy.NewProxy(log, c.metrics, client.label, c.network, client.address, c.unlink, mongoLookup, poolManager, databaseRouter)
+		p, err := proxy.NewProxy(log, c.metrics, client.label, c.network, client.address, c.unlink, mongoLookup, poolManager, databaseRouter, c.tomlConfig.Mongobouncer.AuthEnabled)
 		if err != nil {
 			return nil, err
 		}

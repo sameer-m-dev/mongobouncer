@@ -1,6 +1,6 @@
 #!/bin/bash
 
-for i in {1..100}
+for i in {1..50}
 do
   echo "Starting run $i"
   MONGO_URL=mongodb://localhost:27017/mongobouncer \

@@ -295,15 +295,6 @@ var (
 		[]string{"database"},
 	)
 
-	poolConnectionWaitTime = prometheus.NewHistogramVec(
-		prometheus.HistogramOpts{
-			Name:    "mongobouncer_pool_connection_wait_duration_seconds",
-			Help:    "Time spent waiting for connections from pool by database",
-			Buckets: []float64{0.001, 0.005, 0.01, 0.025, 0.05, 0.1, 0.25, 0.5, 1, 2.5, 5, 10},
-		},
-		[]string{"database"},
-	)
-
 	poolUtilization = prometheus.NewGaugeVec(
 		prometheus.GaugeOpts{
 			Name: "mongobouncer_pool_utilization_ratio",
@@ -445,7 +436,6 @@ func NewMetricsClient(logger *zap.Logger, metricsAddr string) (*MetricsClient, e
 		poolMaxConnections,
 		// New pool monitoring metrics
 		clientsWaitingForServer,
-		poolConnectionWaitTime,
 		poolUtilization,
 		poolExhaustionEvents,
 		poolConnectionCheckoutDuration,
@@ -648,9 +638,6 @@ func (m *MetricsClient) Distribution(name string, value float64, tags []string, 
 	case "response_size":
 		database := parseDatabaseTag(tags)
 		responseSizeBytes.WithLabelValues(database).Observe(value)
-	case "pool_connection_wait":
-		database := parseDatabaseTag(tags)
-		poolConnectionWaitTime.WithLabelValues(database).Observe(value)
 	case "pool_checkout_duration":
 		database := parseDatabaseTag(tags)
 		poolConnectionCheckoutDuration.WithLabelValues(database).Observe(value)

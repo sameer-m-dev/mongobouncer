@@ -31,12 +31,13 @@ type Proxy struct {
 	mongoLookup    MongoLookup
 	poolManager    *pool.Manager
 	databaseRouter *DatabaseRouter
+	authEnabled    bool
 
 	quit chan interface{}
 	kill chan interface{}
 }
 
-func NewProxy(log *zap.Logger, metrics *util.MetricsClient, label, network, address string, unlink bool, mongoLookup MongoLookup, poolManager *pool.Manager, databaseRouter *DatabaseRouter) (*Proxy, error) {
+func NewProxy(log *zap.Logger, metrics *util.MetricsClient, label, network, address string, unlink bool, mongoLookup MongoLookup, poolManager *pool.Manager, databaseRouter *DatabaseRouter, authEnabled bool) (*Proxy, error) {
 	if label != "" {
 		log = log.With(zap.String("cluster", label))
 	}
@@ -51,6 +52,7 @@ func NewProxy(log *zap.Logger, metrics *util.MetricsClient, label, network, addr
 		mongoLookup:    mongoLookup,
 		poolManager:    poolManager,
 		databaseRouter: databaseRouter,
+		authEnabled:    authEnabled,
 
 		quit: make(chan interface{}),
 		kill: make(chan interface{}),
@@ -164,11 +166,18 @@ func (p *Proxy) accept(l net.Listener) {
 		wg.Add(1)
 		opened("connection_opened", []string{})
 		go func() {
-			log.Info("Accept")
-			handleConnection(log, p.metrics, p.address, c, p.mongoLookup, p.poolManager, p.kill, p.databaseRouter)
+			log.Debug("Accepting new client connection",
+				zap.String("local_address", p.address),
+				zap.String("network", p.network))
+
+			// Call handleConnection which now returns the database used
+			databaseUsed := handleConnection(log, p.metrics, p.address, c, p.mongoLookup, p.poolManager, p.kill, p.databaseRouter, p.authEnabled)
 
 			_ = c.Close()
-			log.Info("Close")
+			log.Debug("Client connection closed",
+				zap.String("remote_address", remoteAddr),
+				zap.String("local_address", p.address),
+				zap.String("database_used", databaseUsed))
 
 			close(done)
 			wg.Done()
