@@ -47,3 +47,13 @@ socket_timeout = "60s"                                          # Longer timeout
 connection_string = "mongodb://localhost:27019/analytics_db"
 max_pool_size = 5                                            # Smaller pool for analytics
 heartbeat_interval = "30s"                                   # Less frequent heartbeats
+
+[databases.exact_db]
+# Exact match database - will use route credentials (no passthrough)
+connection_string = "mongodb://admin:admin123@localhost:27021/exact_db?authSource=admin"
+label = "exact_match_database"
+
+[databases."test_*"]
+# Wildcard pattern - will use client credentials for downstream connections
+connection_string = "mongodb://localhost:27020"
+label = "test_wildcard_pattern"

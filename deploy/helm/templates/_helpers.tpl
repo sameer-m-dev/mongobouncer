@@ -111,8 +111,8 @@ Create a default fully qualified secret name.
 Validate configuration
 */}}
 {{- define "mongobouncer.validateValues" -}}
-{{- if and (not .Values.app.databases) (not .Values.app.users) }}
-{{- fail "At least one database or user configuration must be provided" }}
+{{- if not .Values.app.databases }}
+{{- fail "At least one database configuration must be provided" }}
 {{- end }}
 {{- end }}
 

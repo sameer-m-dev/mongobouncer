@@ -12,6 +12,7 @@ import (
 	"github.com/sameer-m-dev/mongobouncer/pool"
 	"github.com/sameer-m-dev/mongobouncer/util"
 	"go.mongodb.org/mongo-driver/mongo/description"
+	"go.mongodb.org/mongo-driver/mongo/options"
 	"go.uber.org/zap"
 
 	"github.com/sameer-m-dev/mongobouncer/mongo"
@@ -36,15 +37,16 @@ type connection struct {
 	routeConfig      *RouteConfig // Cached route config for this connection
 
 	// Client authentication fields
-	clientUsername string // Username from client connection string
-	clientPassword string // Password from client connection string
-	authEnabled    bool   // Whether authentication is enabled
+	clientUsername             string // Username from client connection string
+	clientPassword             string // Password from client connection string
+	authEnabled                bool   // Whether authentication is enabled
+	regexCredentialPassthrough bool   // Whether to use client credentials for wildcard/regex matches
 
 	// Database usage tracking
 	databaseUsed string // The actual database that was used during this connection
 }
 
-func handleConnection(log *zap.Logger, metrics *util.MetricsClient, address string, conn net.Conn, mongoLookup MongoLookup, poolManager *pool.Manager, kill chan interface{}, databaseRouter *DatabaseRouter, authEnabled bool) string {
+func handleConnection(log *zap.Logger, metrics *util.MetricsClient, address string, conn net.Conn, mongoLookup MongoLookup, poolManager *pool.Manager, kill chan interface{}, databaseRouter *DatabaseRouter, authEnabled bool, regexCredentialPassthrough bool) string {
 	defer func() {
 		if r := recover(); r != nil {
 			log.Error("Connection crashed", zap.String("panic", fmt.Sprintf("%v", r)), zap.String("stack", string(debug.Stack())))
@@ -62,11 +64,12 @@ func handleConnection(log *zap.Logger, metrics *util.MetricsClient, address stri
 		conn:    conn,
 		kill:    kill,
 
-		mongoLookup:    mongoLookup,
-		poolManager:    poolManager,
-		databaseRouter: databaseRouter,
-		clientID:       clientID,
-		authEnabled:    authEnabled,
+		mongoLookup:                mongoLookup,
+		poolManager:                poolManager,
+		databaseRouter:             databaseRouter,
+		clientID:                   clientID,
+		authEnabled:                authEnabled,
+		regexCredentialPassthrough: regexCredentialPassthrough,
 	}
 
 	// Extract target database from the client's connection string for smart admin routing
@@ -269,10 +272,53 @@ func (c *connection) roundTrip(msg *mongo.Message, isMaster bool, tags []string)
 
 	// Handle isMaster commands with authentication and mocked response
 	if isMaster {
-		// Extract and validate credentials from appName parameter in isMaster calls
-		if err := c.validateCredentialsFromAppName(msg, databaseName); err != nil {
-			c.log.Error("AppName credential validation failed", zap.Error(err))
-			return nil, fmt.Errorf("authentication failed: %v", err)
+		// Determine if this is an exact match or wildcard/regex match
+		route, err := c.databaseRouter.GetRoute(databaseName)
+		if err != nil {
+			c.log.Error("Failed to get route", zap.Error(err))
+			return nil, fmt.Errorf("routing failed: %v", err)
+		}
+		isExactMatch := route != nil && route.DatabaseName == databaseName
+
+		// Authentication logic:
+		// - For exact matches: ALWAYS require authentication
+		// - For wildcard/regex matches: Only validate if credentials are provided in appName
+		if c.authEnabled && c.clientUsername == "" {
+			if isExactMatch {
+				// For exact matches, ALWAYS require authentication
+				c.log.Debug("Exact match detected, requiring authentication", zap.String("database", databaseName))
+				if err := c.validateCredentialsFromAppName(msg, databaseName); err != nil {
+					c.log.Error("AppName credential validation failed for exact match", zap.Error(err))
+					return nil, fmt.Errorf("authentication failed: %v", err)
+				}
+			} else {
+				// For wildcard/regex matches, only validate if appName credentials are provided
+				appName, err := c.extractAppNameFromMessage(msg)
+				if err != nil {
+					c.log.Debug("Failed to extract appName", zap.Error(err))
+					// If we can't extract appName, that's okay for wildcard matches
+				} else if appName != "" {
+					// Check if appName is in credential format (username:password)
+					username, password, parseErr := c.parseAppNameCredentials(appName)
+					if parseErr != nil {
+						c.log.Debug("AppName is not in credential format, skipping authentication",
+							zap.String("app_name", appName),
+							zap.Error(parseErr))
+						// This is okay for wildcard matches - we don't require credentials
+					} else if username != "" && password != "" {
+						// Only validate credentials if appName is in proper credential format
+						c.log.Debug("Wildcard/regex match with appName credentials, validating", zap.String("database", databaseName))
+						if err := c.validateCredentialsFromAppName(msg, databaseName); err != nil {
+							c.log.Error("AppName credential validation failed for wildcard match", zap.Error(err))
+							return nil, fmt.Errorf("authentication failed: %v", err)
+						}
+					} else {
+						c.log.Debug("Wildcard/regex match with empty credentials, skipping authentication", zap.String("database", databaseName))
+					}
+				} else {
+					c.log.Debug("Wildcard/regex match without appName credentials, skipping authentication", zap.String("database", databaseName))
+				}
+			}
 		}
 
 		requestID := msg.Op.RequestID()
@@ -313,7 +359,24 @@ func (c *connection) roundTrip(msg *mongo.Message, isMaster bool, tags []string)
 				zap.String("current_operation_db", databaseName))
 		}
 
-		mongoClient = route.MongoClient
+		// For wildcard/regex matches with credential passthrough, create a new MongoDB client
+		// with the client's credentials instead of using the route's MongoDB client
+		if c.regexCredentialPassthrough && c.isWildcardOrRegexMatch(targetDatabase, route) && c.clientUsername != "" {
+			c.log.Debug("Using credential passthrough for MongoDB client creation",
+				zap.String("username", c.clientUsername),
+				zap.String("target_database", targetDatabase))
+
+			// Create a new MongoDB client with the client's credentials
+			clientWithCredentials, err := c.createMongoClientWithCredentials(route, c.clientUsername, c.clientPassword)
+			if err != nil {
+				c.log.Error("Failed to create MongoDB client with client credentials", zap.Error(err))
+				return nil, fmt.Errorf("failed to create MongoDB client with client credentials: %v", err)
+			}
+			mongoClient = clientWithCredentials
+		} else {
+			// Use the route's MongoDB client for exact matches or when credential passthrough is disabled
+			mongoClient = route.MongoClient
+		}
 	} else {
 		return nil, fmt.Errorf("mongo client not found for address: %s", c.address)
 	}
@@ -698,7 +761,7 @@ func (c *connection) extractHostFromRoute(targetRoute *RouteConfig) (string, str
 		zap.String("connection_string", targetRoute.ConnectionString))
 
 	// Parse the connection string to extract host and port
-	// Format: mongodb://host:port/database
+	// Format: mongodb://[username:password@]host:port/database
 
 	// Simple parsing - look for mongodb:// and extract host:port
 	if !strings.HasPrefix(targetRoute.ConnectionString, "mongodb://") {
@@ -708,14 +771,36 @@ func (c *connection) extractHostFromRoute(targetRoute *RouteConfig) (string, str
 	// Remove mongodb:// prefix
 	withoutScheme := strings.TrimPrefix(targetRoute.ConnectionString, "mongodb://")
 
+	// Handle credentials - look for @ symbol
+	var hostPortPart string
+	if atIndex := strings.Index(withoutScheme, "@"); atIndex != -1 {
+		// Has credentials, extract everything after @
+		hostPortPart = withoutScheme[atIndex+1:]
+	} else {
+		// No credentials
+		hostPortPart = withoutScheme
+	}
+
 	// Find the first '/' to separate host:port from database
-	slashIndex := strings.Index(withoutScheme, "/")
+	slashIndex := strings.Index(hostPortPart, "/")
 	if slashIndex == -1 {
-		return "", ""
+		// No database specified, use the whole hostPortPart
+		hostPort := hostPortPart
+		c.log.Debug("Extracted host:port from connection string",
+			zap.String("host_port", hostPort))
+
+		// Extract host and port
+		host, port := c.extractHostAndPort(hostPort)
+
+		c.log.Debug("Parsed host and port",
+			zap.String("host", host),
+			zap.String("port", port))
+
+		return host, port
 	}
 
 	// Extract host:port part
-	hostPort := withoutScheme[:slashIndex]
+	hostPort := hostPortPart[:slashIndex]
 
 	c.log.Debug("Extracted host:port from connection string",
 		zap.String("host_port", hostPort))
@@ -796,7 +881,9 @@ func (c *connection) validateCredentialsFromAppName(msg *mongo.Message, targetDa
 	}
 
 	if appName == "" {
-		c.log.Debug("No appName found in message, authentication required but not provided")
+		c.log.Debug("No appName found in message")
+		// For exact matches, this is an error. For wildcard matches, this is okay.
+		// The calling code should handle this distinction.
 		return fmt.Errorf("authentication required: appName parameter must be provided")
 	}
 
@@ -880,7 +967,22 @@ func (c *connection) validateCredentialsAgainstDatabase(username, password, targ
 		return fmt.Errorf("database %s is not supported: %v", targetDatabase, err)
 	}
 
-	// Extract credentials from the route's connection string
+	// Check if this is a wildcard/regex match and credential passthrough is enabled
+	if c.regexCredentialPassthrough && c.isWildcardOrRegexMatch(targetDatabase, route) {
+		c.log.Debug("Using credential passthrough for wildcard/regex match",
+			zap.String("username", username),
+			zap.String("target_database", targetDatabase))
+
+		// Store the client credentials for use in downstream connections
+		c.clientUsername = username
+		c.clientPassword = password
+
+		// For wildcard/regex matches, we don't validate against route credentials
+		// Instead, we'll use the client credentials for the downstream connection
+		return nil
+	}
+
+	// For exact matches, validate credentials against database configuration
 	routeUsername, routePassword, err := c.extractCredentialsFromConnectionString(route.ConnectionString)
 	if err != nil {
 		return fmt.Errorf("failed to extract route credentials: %v", err)
@@ -899,5 +1001,131 @@ func (c *connection) validateCredentialsAgainstDatabase(username, password, targ
 		zap.String("username", username),
 		zap.String("target_database", targetDatabase))
 
+	// Store validated credentials for this connection
+	c.clientUsername = username
+	c.clientPassword = password
+
 	return nil
+}
+
+// isWildcardOrRegexMatch checks if the target database matches a wildcard or regex pattern
+func (c *connection) isWildcardOrRegexMatch(targetDatabase string, route *RouteConfig) bool {
+	// Check if the route's database name contains wildcards or regex patterns
+	routePattern := route.DatabaseName
+
+	// Check for wildcard patterns
+	if strings.Contains(routePattern, "*") {
+		c.log.Debug("Route pattern contains wildcard",
+			zap.String("route_pattern", routePattern),
+			zap.String("target_database", targetDatabase))
+		return true
+	}
+
+	// Check if this is a wildcard route (matches everything)
+	if routePattern == "*" {
+		c.log.Debug("Route is wildcard route",
+			zap.String("target_database", targetDatabase))
+		return true
+	}
+
+	// Check if this route was added as a pattern route by checking if the database name
+	// doesn't exactly match the route pattern (indicating it was matched via pattern)
+	if routePattern != targetDatabase {
+		c.log.Debug("Route pattern doesn't match target database exactly - likely a pattern match",
+			zap.String("route_pattern", routePattern),
+			zap.String("target_database", targetDatabase))
+		return true
+	}
+
+	c.log.Debug("Route is exact match",
+		zap.String("route_pattern", routePattern),
+		zap.String("target_database", targetDatabase))
+
+	return false
+}
+
+// createMongoClientWithCredentials creates a MongoDB client using the client's credentials
+func (c *connection) createMongoClientWithCredentials(route *RouteConfig, username, password string) (*mongo.Mongo, error) {
+	// Extract host and port from the route's connection string
+	host, port := c.extractHostFromRoute(route)
+	if host == "" || port == "" {
+		return nil, fmt.Errorf("failed to extract host/port from route connection string")
+	}
+
+	// Parse the original route connection string to extract authSource and other options
+	originalURI := route.ConnectionString
+	parsedURI, err := url.Parse(originalURI)
+	if err != nil {
+		return nil, fmt.Errorf("failed to parse route connection string: %v", err)
+	}
+
+	// Build new connection string with client credentials
+	var newConnectionString string
+	if username != "" && password != "" {
+		// Use client credentials but preserve authSource and other options from route
+		newConnectionString = fmt.Sprintf("mongodb://%s:%s@%s:%s/", username, password, host, port)
+
+		// Add authSource if it was specified in the original route
+		if parsedURI.Query().Get("authSource") != "" {
+			newConnectionString += "?authSource=" + parsedURI.Query().Get("authSource")
+		} else {
+			// Default to admin authSource for client credentials
+			newConnectionString += "?authSource=admin"
+		}
+
+		// Add other query parameters from the original route
+		query := parsedURI.Query()
+		for key, values := range query {
+			if key != "authSource" { // We already handled authSource above
+				for _, value := range values {
+					if strings.Contains(newConnectionString, "?") {
+						newConnectionString += "&" + key + "=" + value
+					} else {
+						newConnectionString += "?" + key + "=" + value
+					}
+				}
+			}
+		}
+	} else {
+		newConnectionString = fmt.Sprintf("mongodb://%s:%s/", host, port)
+		// Preserve query parameters from original route
+		if parsedURI.RawQuery != "" {
+			newConnectionString += "?" + parsedURI.RawQuery
+		}
+	}
+
+	c.log.Debug("Creating MongoDB client with client credentials",
+		zap.String("username", username),
+		zap.String("host", host),
+		zap.String("port", port),
+		zap.String("auth_source", parsedURI.Query().Get("authSource")),
+		zap.String("connection_string", sanitizeConnectionString(newConnectionString)))
+
+	// Create MongoDB client options
+	opts := options.Client().ApplyURI(newConnectionString)
+
+	// Create the MongoDB client
+	mongoClient, err := mongo.Connect(c.log, c.metrics, opts, false) // Don't ping for dynamic clients
+	if err != nil {
+		return nil, fmt.Errorf("failed to create MongoDB client with client credentials: %v", err)
+	}
+
+	return mongoClient, nil
+}
+
+// sanitizeConnectionString removes sensitive information from connection string for logging
+func sanitizeConnectionString(connStr string) string {
+	// Replace password in URI with ***
+	if strings.Contains(connStr, "@") {
+		parts := strings.Split(connStr, "@")
+		if len(parts) == 2 && strings.Contains(parts[0], "://") {
+			userInfo := strings.Split(parts[0], "://")[1]
+			if strings.Contains(userInfo, ":") {
+				userParts := strings.Split(userInfo, ":")
+				sanitized := userParts[0] + ":***"
+				return strings.Replace(connStr, userInfo, sanitized, 1)
+			}
+		}
+	}
+	return connStr
 }

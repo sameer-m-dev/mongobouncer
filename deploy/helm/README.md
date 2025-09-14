@@ -27,10 +27,10 @@ MongoBouncer is a MongoDB connection pooling proxy that serves as a connection m
 
 ```
 deploy/
-├── README.md                           # This comprehensive guide
 └── helm/                               # Helm chart
     ├── Chart.yaml                      # Chart metadata
     ├── values.yaml                     # Default configuration values
+    ├── README.md                       # Readme file
     ├── templates/                      # Kubernetes resource templates
     │   ├── _helpers.tpl               # Template helpers
     │   ├── configmap.yaml             # Configuration management
@@ -66,22 +66,22 @@ curl https://raw.githubusercontent.com/helm/helm/master/scripts/get-helm-3 | bas
 cd deploy/helm/
 
 # Install with default configuration
-helm install mongobouncer . --namespace mongodb --create-namespace
+helm install mongobouncer . --namespace mongobouncer-system --create-namespace
 
 # Or install with custom values
-helm install mongobouncer . -f your-values.yaml --namespace mongodb --create-namespace
+helm install mongobouncer . -f your-values.yaml --namespace mongobouncer-system --create-namespace
 ```
 
 ### 3. Test the Deployment
 
 ```bash
 # Run Helm tests
-helm test mongobouncer --namespace mongodb
+helm test mongobouncer --namespace mongobouncer-system
 
 # Manual connection test
 kubectl run mongodb-client --rm --tty -i --restart='Never' \
   --image mongo:7 -- \
-  mongo --host mongobouncer.mongodb.svc.cluster.local:27017 \
+  mongo --host mongobouncer.mongobouncer-system.svc.cluster.local:27017 \
   --eval "db.runCommand('ping')"
 ```
 
@@ -114,19 +114,6 @@ app:
       maxConnections: 25
       poolMode: "statement"
       readPreference: "secondary"
-  
-  users:
-    app_user:
-      password: "scram-sha-256:your_password_hash"
-      poolMode: "session"
-      maxUserConnections: 25
-      allowedDatabases: ["primary"]
-    
-    readonly_user:
-      password: "scram-sha-256:your_readonly_hash"
-      readOnly: true
-      maxUserConnections: 10
-      allowedDatabases: ["analytics"]
 
 # Resource allocation
 resources:
@@ -176,7 +163,6 @@ The following table lists the configurable parameters of the MongoBouncer chart 
 | `app.config.maxPoolSize` | Maximum connection pool size | `20` |
 | `app.config.maxClientConn` | Maximum client connections (0 = unlimited) | `100` |
 | `app.databases` | MongoDB database configurations | `{}` |
-| `app.users` | User authentication configurations | `{}` |
 
 #### Deployment Parameters
 
@@ -343,10 +329,10 @@ Once deployed, applications can connect to MongoBouncer using the standard Mongo
 
 ```bash
 # Internal Kubernetes connection
-mongodb://mongobouncer.mongodb.svc.cluster.local:27017/database
+mongodb://mongobouncer.mongobouncer-system.svc.cluster.local:27017/database
 
 # With authentication
-mongodb://username:password@mongobouncer.mongodb.svc.cluster.local:27017/database
+mongodb://username:password@mongobouncer.mongobouncer-system.svc.cluster.local:27017/database
 ```
 
 ### Testing the Deployment
@@ -359,7 +345,7 @@ helm test mongobouncer --namespace mongodb
 kubectl run mongodb-client --rm --tty -i --restart='Never' \
   --namespace mongodb \
   --image mongo:7 -- \
-  mongo --host mongobouncer.mongodb.svc.cluster.local:27017 \
+  mongo --host mongobouncer.mongobouncer-system.svc.cluster.local:27017 \
   --eval "db.runCommand('ping')"
 ```
 

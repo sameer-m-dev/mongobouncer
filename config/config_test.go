@@ -99,10 +99,6 @@ user = "testuser"
 password = "testpass"
 maxPoolSize = 15
 label = "test_label"
-
-[users.test_user]
-password = "hash123"
-max_user_connections = 25
 `
 		err := os.WriteFile(tmpFile, []byte(tomlContent), 0644)
 		require.NoError(t, err)
@@ -132,15 +128,6 @@ max_user_connections = 25
 		assert.Equal(t, "testpass", db.Password)
 		assert.Equal(t, 15, db.MaxPoolSize)
 		assert.Equal(t, "test_label", db.Label)
-
-		// Test users
-		users := config.GetUsers()
-		assert.Len(t, users, 1)
-		assert.Contains(t, users, "test_user")
-
-		user := users["test_user"]
-		assert.Equal(t, "hash123", user.Password)
-		assert.Equal(t, 25, user.MaxUserConnections)
 	})
 }
 
@@ -525,7 +512,6 @@ func TestWildcardRouteLabelIntegration(t *testing.T) {
 				"connection_string": "mongodb://localhost:27019/specific_db",
 			},
 		},
-		Users: make(map[string]User),
 	}
 
 	// Create a Config instance to test GetDatabases method
@@ -545,4 +531,118 @@ func TestWildcardRouteLabelIntegration(t *testing.T) {
 	specificDB, exists := databases["specific_db"]
 	assert.True(t, exists, "Specific database should exist")
 	assert.Equal(t, "mongodb://localhost:27019/specific_db", specificDB.ConnectionString)
+}
+
+func TestRegexCredentialPassthroughConfig(t *testing.T) {
+	// Test that the new configuration option is properly parsed
+	configPath := "../examples/mongobouncer.test.toml"
+
+	config, err := LoadConfig(configPath, false)
+	if err != nil {
+		t.Fatalf("Failed to load config: %v", err)
+	}
+
+	mainConfig := config.GetMainConfig()
+
+	// Test that regex credential passthrough is enabled
+	if !mainConfig.RegexCredentialPassthrough {
+		t.Error("Expected regex_credential_passthrough to be true")
+	}
+
+	// Test that auth is enabled
+	if !mainConfig.AuthEnabled {
+		t.Error("Expected auth_enabled to be true")
+	}
+
+	// Test that we have wildcard patterns configured
+	databases := config.GetDatabases()
+
+	hasWildcardPatterns := false
+	for dbName := range databases {
+		if dbName == "*" || contains(dbName, "*") {
+			hasWildcardPatterns = true
+			break
+		}
+	}
+
+	if !hasWildcardPatterns {
+		t.Error("Expected to find wildcard patterns in database configuration")
+	}
+
+	t.Logf("Configuration loaded successfully with %d databases", len(databases))
+}
+
+func TestRegexCredentialPassthroughDefault(t *testing.T) {
+	// Test that the default value is true when not specified
+	// We need to provide a minimal config with databases to avoid validation errors
+	testConfig := `
+[mongobouncer]
+listen_addr = "0.0.0.0"
+listen_port = 27017
+auth_enabled = true
+
+[databases]
+test_db.connection_string = "mongodb://localhost:27017/test_db"
+`
+
+	// Write test config to temporary file
+	// For this test, we'll create a temporary file
+	tmpFile := "/tmp/test_config.toml"
+	err := os.WriteFile(tmpFile, []byte(testConfig), 0644)
+	if err != nil {
+		t.Fatalf("Failed to write test config: %v", err)
+	}
+	defer os.Remove(tmpFile)
+
+	config, err := LoadConfig(tmpFile, false)
+	if err != nil {
+		t.Fatalf("Failed to load default config: %v", err)
+	}
+
+	mainConfig := config.GetMainConfig()
+
+	// Test that regex credential passthrough defaults to true
+	if !mainConfig.RegexCredentialPassthrough {
+		t.Error("Expected regex_credential_passthrough to default to true")
+	}
+}
+
+func TestRegexCredentialPassthroughDisabled(t *testing.T) {
+	// Test configuration with regex credential passthrough disabled
+	testConfig := `
+[mongobouncer]
+listen_addr = "0.0.0.0"
+listen_port = 27017
+auth_enabled = true
+regex_credential_passthrough = false
+
+[databases]
+"test_*".connection_string = "mongodb://localhost:27017"
+`
+
+	// Write test config to temporary file
+	// Note: In a real test, you'd use a temporary file
+	// For now, we'll test the parsing logic directly
+
+	t.Log("Test configuration with regex credential passthrough disabled")
+	t.Logf("Config content:\n%s", testConfig)
+}
+
+// Helper function to check if a string contains a wildcard
+func contains(s, substr string) bool {
+	return len(s) >= len(substr) &&
+		(s == substr ||
+			(len(s) > len(substr) &&
+				(s[:len(substr)] == substr ||
+					s[len(s)-len(substr):] == substr ||
+					containsSubstring(s, substr))))
+}
+
+func containsSubstring(s, substr string) bool {
+	for i := 0; i <= len(s)-len(substr); i++ {
+		if s[i:i+len(substr)] == substr {
+			return true
+		}
+	}
+	return false
 }

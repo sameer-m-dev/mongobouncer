@@ -55,12 +55,11 @@ Health Check:
 4. View logs:
   kubectl logs --namespace {{ .Release.Namespace }} -l "{{ include "mongobouncer.selectorLabels" . }}" -f
 
-{{- if not (or .Values.app.databases .Values.app.users) }}
+{{- if not .Values.app.databases }}
 
-⚠️  WARNING: No databases or users configured! 
+⚠️  WARNING: No databases configured! 
    Please update your values.yaml to configure:
    - app.databases: MongoDB connection strings and settings
-   - app.users: Authentication credentials and permissions
    
    Then upgrade the release:
    helm upgrade {{ .Release.Name }} {{ .Chart.Name }} --namespace {{ .Release.Namespace }} -f your-values.yaml

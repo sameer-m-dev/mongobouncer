@@ -18,16 +18,17 @@ logfile = ""       # Empty means stdout, or specify path: "/var/log/mongobouncer
 # =====================================
 # Connection Pooling & Performance
 # =====================================
-pool_mode = "statement"         # session, transaction, statement
-max_pool_size = 10              # MongoDB driver's internal pool size
-min_pool_size = 1               # MongoDB driver's minimum pool size
-max_client_conn = 100           # Maximum client connections (0 = unlimited)
-max_conn_idle_time = "30s"      # How long to keep idle connections
-server_selection_timeout = "5s" # Server selection timeout
-connect_timeout = "5s"          # Connection establishment timeout
-socket_timeout = "30s"          # Socket operation timeout
-heartbeat_interval = "10s"      # Heartbeat frequency
-auth_enabled = true             # Enable authentication on the proxy level
+pool_mode = "statement"                # session, transaction, statement
+max_pool_size = 10                     # MongoDB driver's internal pool size
+min_pool_size = 1                      # MongoDB driver's minimum pool size
+max_client_conn = 100                  # Maximum client connections (0 = unlimited)
+max_conn_idle_time = "30s"             # How long to keep idle connections
+server_selection_timeout = "5s"        # Server selection timeout
+connect_timeout = "5s"                 # Connection establishment timeout
+socket_timeout = "30s"                 # Socket operation timeout
+heartbeat_interval = "10s"             # Heartbeat frequency
+auth_enabled = true                    # Enable authentication on the proxy level
+regex_credential_passthrough = true    # Use credentials passed in appName as well as the passed authSource for regex matched/wildcard match databases in downstream connections
 ping = true
 
 # =====================================

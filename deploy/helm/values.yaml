@@ -71,20 +71,6 @@ app:
     #   poolMode: "statement"
     #   readPreference: "secondary"
 
-  # User authentication - these should be configured per environment
-  users:
-    {}
-    # Example:
-    # app_user:
-    #   password: "scram-sha-256:password_hash"
-    #   poolMode: "session"
-    #   maxUserConnections: 25
-    #   allowedDatabases: ["app_db"]
-    # readonly_user:
-    #   password: "scram-sha-256:password_hash"
-    #   readOnly: true
-    #   maxUserConnections: 10
-
 # Deployment configuration
 replicaCount: 2
 

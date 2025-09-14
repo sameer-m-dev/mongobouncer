@@ -24,7 +24,6 @@ const defaultMetricsAddress = "localhost:9090"
 type TOMLConfig struct {
 	Mongobouncer MongobouncerConfig     `toml:"mongobouncer"`
 	Databases    map[string]interface{} `toml:"databases"` // Can be string or Database struct
-	Users        map[string]User        `toml:"users"`
 }
 
 // Database represents database configuration
@@ -77,6 +76,9 @@ type MongobouncerConfig struct {
 	// Authentication settings
 	AuthEnabled bool `toml:"auth_enabled"`
 
+	// Wildcard/Regex credential passthrough settings
+	RegexCredentialPassthrough bool `toml:"regex_credential_passthrough"`
+
 	// Network settings (implemented)
 	Network string `toml:"network"`
 	Unlink  bool   `toml:"unlink"`
@@ -90,13 +92,6 @@ type MongobouncerConfig struct {
 	MongoDBSocketTimeout          time.Duration `toml:"socket_timeout"`
 	MongoDBHeartbeatInterval      time.Duration `toml:"heartbeat_interval"`
 	Ping                          bool          `toml:"ping"`
-}
-
-// User represents user configuration
-type User struct {
-	Password           string `toml:"password"`
-	PoolMode           string `toml:"pool_mode"`
-	MaxUserConnections int    `toml:"max_user_connections"`
 }
 
 // Config represents the runtime configuration
@@ -121,18 +116,18 @@ func LoadConfig(configPath string, verbose bool) (*Config, error) {
 	// Set default values
 	config := &TOMLConfig{
 		Mongobouncer: MongobouncerConfig{
-			ListenAddr:     "0.0.0.0",
-			ListenPort:     27017,
-			LogLevel:       "info",
-			Network:        "tcp4",
-			PoolMode:       "session",
-			MaxClientConn:  100,
-			MetricsAddress: "localhost:9090",
-			MetricsEnabled: true,
-			AuthEnabled:    true,
+			ListenAddr:                 "0.0.0.0",
+			ListenPort:                 27017,
+			LogLevel:                   "info",
+			Network:                    "tcp4",
+			PoolMode:                   "session",
+			MaxClientConn:              100,
+			MetricsAddress:             "localhost:9090",
+			MetricsEnabled:             true,
+			AuthEnabled:                true,
+			RegexCredentialPassthrough: true,
 		},
 		Databases: make(map[string]interface{}),
-		Users:     make(map[string]User),
 	}
 
 	// Load from file if provided
@@ -230,30 +225,14 @@ func parseRawConfig(rawConfig map[string]interface{}, config *TOMLConfig) error 
 		if authEnabled, ok := mb["auth_enabled"].(bool); ok {
 			config.Mongobouncer.AuthEnabled = authEnabled
 		}
+		if regexCredentialPassthrough, ok := mb["regex_credential_passthrough"].(bool); ok {
+			config.Mongobouncer.RegexCredentialPassthrough = regexCredentialPassthrough
+		}
 	}
 
 	// Parse databases section
 	if databases, ok := rawConfig["databases"].(map[string]interface{}); ok {
 		config.Databases = databases
-	}
-
-	// Parse users section
-	if users, ok := rawConfig["users"].(map[string]interface{}); ok {
-		for username, userConfig := range users {
-			if userMap, ok := userConfig.(map[string]interface{}); ok {
-				user := User{}
-				if password, ok := userMap["password"].(string); ok {
-					user.Password = password
-				}
-				if poolMode, ok := userMap["pool_mode"].(string); ok {
-					user.PoolMode = poolMode
-				}
-				if maxUserConnections, ok := userMap["max_user_connections"].(int64); ok {
-					user.MaxUserConnections = int(maxUserConnections)
-				}
-				config.Users[username] = user
-			}
-		}
 	}
 
 	return nil
@@ -845,7 +824,7 @@ func (c *Config) Proxies(log *zap.Logger) ([]*proxy.Proxy, error) {
 
 	var proxies []*proxy.Proxy
 	for _, client := range c.clients {
-		p, err := proxy.NewProxy(log, c.metrics, client.label, c.network, client.address, c.unlink, mongoLookup, poolManager, databaseRouter, c.tomlConfig.Mongobouncer.AuthEnabled)
+		p, err := proxy.NewProxy(log, c.metrics, client.label, c.network, client.address, c.unlink, mongoLookup, poolManager, databaseRouter, c.tomlConfig.Mongobouncer.AuthEnabled, c.tomlConfig.Mongobouncer.RegexCredentialPassthrough)
 		if err != nil {
 			return nil, err
 		}
@@ -979,11 +958,6 @@ func (c *Config) GetDatabases() map[string]Database {
 	}
 
 	return result
-}
-
-// GetUsers returns the user configurations
-func (c *Config) GetUsers() map[string]User {
-	return c.tomlConfig.Users
 }
 
 // GetMainConfig returns the main configuration

@@ -196,7 +196,7 @@ func setupProxies(t *testing.T, startPort int, count int) []*Proxy {
 		}
 		upstreams[address] = upstream
 
-		proxy, err := NewProxy(zap.L(), metrics, "label", "tcp4", address, false, lookup, nil, nil, false)
+		proxy, err := NewProxy(zap.L(), metrics, "label", "tcp4", address, false, lookup, nil, nil, false, false)
 		assert.Nil(t, err)
 
 		proxies = append(proxies, proxy)
@@ -291,28 +291,211 @@ func TestHostBasedAdminRouting(t *testing.T) {
 	assert.True(t, targetDB == "*" || targetDB == "admin")
 }
 
+func TestIsWildcardOrRegexMatch(t *testing.T) {
+	// Create a mock connection for testing with a logger
+	logger, _ := zap.NewDevelopment()
+	c := &connection{
+		log: logger,
+	}
+
+	tests := []struct {
+		name           string
+		targetDatabase string
+		routePattern   string
+		expected       bool
+	}{
+		{
+			name:           "exact match",
+			targetDatabase: "test_db",
+			routePattern:   "test_db",
+			expected:       false,
+		},
+		{
+			name:           "wildcard prefix",
+			targetDatabase: "test_db",
+			routePattern:   "test_*",
+			expected:       true,
+		},
+		{
+			name:           "wildcard suffix",
+			targetDatabase: "test_db",
+			routePattern:   "*_db",
+			expected:       true,
+		},
+		{
+			name:           "wildcard contains",
+			targetDatabase: "test_staging_db",
+			routePattern:   "*_staging_*",
+			expected:       true,
+		},
+		{
+			name:           "full wildcard",
+			targetDatabase: "any_database",
+			routePattern:   "*",
+			expected:       true,
+		},
+		{
+			name:           "pattern match by non-exact",
+			targetDatabase: "test_db",
+			routePattern:   "test_*",
+			expected:       true,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			route := &RouteConfig{
+				DatabaseName: tt.routePattern,
+			}
+
+			result := c.isWildcardOrRegexMatch(tt.targetDatabase, route)
+			if result != tt.expected {
+				t.Errorf("isWildcardOrRegexMatch(%s, %s) = %v, expected %v",
+					tt.targetDatabase, tt.routePattern, result, tt.expected)
+			}
+		})
+	}
+}
+
+func TestSanitizeConnectionString(t *testing.T) {
+	tests := []struct {
+		name     string
+		input    string
+		expected string
+	}{
+		{
+			name:     "connection string with credentials",
+			input:    "mongodb://user:password@localhost:27017/db",
+			expected: "mongodb://user:***@localhost:27017/db",
+		},
+		{
+			name:     "connection string without credentials",
+			input:    "mongodb://localhost:27017/db",
+			expected: "mongodb://localhost:27017/db",
+		},
+		{
+			name:     "connection string with user only",
+			input:    "mongodb://user@localhost:27017/db",
+			expected: "mongodb://user@localhost:27017/db",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			result := sanitizeConnectionString(tt.input)
+			if result != tt.expected {
+				t.Errorf("sanitizeConnectionString(%s) = %s, expected %s",
+					tt.input, result, tt.expected)
+			}
+		})
+	}
+}
+
+func TestExtractHostFromRoute(t *testing.T) {
+	// Create a mock connection for testing with a logger
+	logger, _ := zap.NewDevelopment()
+	c := &connection{
+		log: logger,
+	}
+
+	tests := []struct {
+		name             string
+		connectionString string
+		expectedHost     string
+		expectedPort     string
+	}{
+		{
+			name:             "standard connection string",
+			connectionString: "mongodb://localhost:27017/db",
+			expectedHost:     "localhost",
+			expectedPort:     "27017",
+		},
+		{
+			name:             "connection string with credentials",
+			connectionString: "mongodb://user:pass@localhost:27017/db",
+			expectedHost:     "localhost",
+			expectedPort:     "27017",
+		},
+		{
+			name:             "connection string with IPv6",
+			connectionString: "mongodb://[::1]:27017/db",
+			expectedHost:     "::1",
+			expectedPort:     "27017",
+		},
+		{
+			name:             "connection string without port",
+			connectionString: "mongodb://localhost/db",
+			expectedHost:     "localhost",
+			expectedPort:     "27017", // Default port
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			route := &RouteConfig{
+				ConnectionString: tt.connectionString,
+			}
+
+			host, port := c.extractHostFromRoute(route)
+			if host != tt.expectedHost {
+				t.Errorf("extractHostFromRoute() host = %s, expected %s", host, tt.expectedHost)
+			}
+			if port != tt.expectedPort {
+				t.Errorf("extractHostFromRoute() port = %s, expected %s", port, tt.expectedPort)
+			}
+		})
+	}
+}
+
 // TestExtractHostAndPort tests the host and port extraction functionality
 func TestExtractHostAndPort(t *testing.T) {
-	logger := zap.NewNop()
-	c := &connection{log: logger}
+	// Create a mock connection for testing with a logger
+	logger, _ := zap.NewDevelopment()
+	c := &connection{
+		log: logger,
+	}
 
-	// Test IPv4 format
-	host, port := c.extractHostAndPort("localhost:27017")
-	assert.Equal(t, "localhost", host)
-	assert.Equal(t, "27017", port)
+	tests := []struct {
+		name         string
+		hostPort     string
+		expectedHost string
+		expectedPort string
+	}{
+		{
+			name:         "standard host:port",
+			hostPort:     "localhost:27017",
+			expectedHost: "localhost",
+			expectedPort: "27017",
+		},
+		{
+			name:         "IPv6 address",
+			hostPort:     "[::1]:27017",
+			expectedHost: "::1",
+			expectedPort: "27017",
+		},
+		{
+			name:         "host without port",
+			hostPort:     "localhost",
+			expectedHost: "localhost",
+			expectedPort: "27017", // Default port
+		},
+		{
+			name:         "IPv6 without port",
+			hostPort:     "[::1]",
+			expectedHost: "::1",
+			expectedPort: "27017", // Default port
+		},
+	}
 
-	// Test IPv6 format
-	host, port = c.extractHostAndPort("[::1]:27017")
-	assert.Equal(t, "::1", host)
-	assert.Equal(t, "27017", port)
-
-	// Test default port
-	host, port = c.extractHostAndPort("localhost")
-	assert.Equal(t, "localhost", host)
-	assert.Equal(t, "27017", port)
-
-	// Test IPv6 without port
-	host, port = c.extractHostAndPort("[::1]")
-	assert.Equal(t, "::1", host)
-	assert.Equal(t, "27017", port)
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			host, port := c.extractHostAndPort(tt.hostPort)
+			if host != tt.expectedHost {
+				t.Errorf("extractHostAndPort() host = %s, expected %s", host, tt.expectedHost)
+			}
+			if port != tt.expectedPort {
+				t.Errorf("extractHostAndPort() port = %s, expected %s", port, tt.expectedPort)
+			}
+		})
+	}
 }

@@ -87,34 +87,3 @@ data:
     {{- end }}
     {{- end }}
     {{- end }}
-
-    {{- if .Values.app.users }}
-    [users]
-    {{- range $key, $user := .Values.app.users }}
-    [users.{{ $key }}]
-    {{- if $user.password }}
-    password = "{{ $user.password }}"
-    {{- end }}
-    {{- if $user.poolMode }}
-    pool_mode = "{{ $user.poolMode }}"
-    {{- end }}
-    {{- if $user.maxUserConnections }}
-    max_user_connections = {{ $user.maxUserConnections }}
-    {{- end }}
-    {{- if $user.allowedDatabases }}
-    allowed_databases = {{ $user.allowedDatabases | toJson }}
-    {{- end }}
-    {{- if $user.defaultDatabase }}
-    default_database = "{{ $user.defaultDatabase }}"
-    {{- end }}
-    {{- if $user.readOnly }}
-    read_only = {{ $user.readOnly }}
-    {{- end }}
-    {{- if $user.adminAccess }}
-    admin_access = {{ $user.adminAccess }}
-    {{- end }}
-    {{- if $user.queryTimeout }}
-    query_timeout = "{{ $user.queryTimeout }}"
-    {{- end }}
-    {{- end }}
-    {{- end }}
