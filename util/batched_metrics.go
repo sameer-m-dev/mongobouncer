@@ -8,6 +8,14 @@ import (
 	"go.uber.org/zap"
 )
 
+// DistributionOperation represents a batched distribution operation
+type DistributionOperation struct {
+	Name  string
+	Value float64
+	Tags  []string
+	Rate  float64
+}
+
 // BatchedMetricsClient provides batched metrics collection to reduce overhead
 type BatchedMetricsClient struct {
 	client        *MetricsClient
@@ -16,9 +24,10 @@ type BatchedMetricsClient struct {
 	flushInterval time.Duration
 
 	// Batched operations
-	timingBatch  []TimingOperation
-	counterBatch []CounterOperation
-	gaugeBatch   []GaugeOperation
+	timingBatch       []TimingOperation
+	counterBatch      []CounterOperation
+	gaugeBatch        []GaugeOperation
+	distributionBatch []DistributionOperation
 
 	// Mutex for batch operations
 	mutex sync.Mutex
@@ -57,15 +66,16 @@ func NewBatchedMetricsClient(client *MetricsClient, logger *zap.Logger, batchSiz
 	ctx, cancel := context.WithCancel(context.Background())
 
 	bmc := &BatchedMetricsClient{
-		client:        client,
-		logger:        logger,
-		batchSize:     batchSize,
-		flushInterval: flushInterval,
-		timingBatch:   make([]TimingOperation, 0, batchSize),
-		counterBatch:  make([]CounterOperation, 0, batchSize),
-		gaugeBatch:    make([]GaugeOperation, 0, batchSize),
-		ctx:           ctx,
-		cancel:        cancel,
+		client:            client,
+		logger:            logger,
+		batchSize:         batchSize,
+		flushInterval:     flushInterval,
+		timingBatch:       make([]TimingOperation, 0, batchSize),
+		counterBatch:      make([]CounterOperation, 0, batchSize),
+		gaugeBatch:        make([]GaugeOperation, 0, batchSize),
+		distributionBatch: make([]DistributionOperation, 0, batchSize),
+		ctx:               ctx,
+		cancel:            cancel,
 	}
 
 	// Start background flush goroutine
@@ -136,23 +146,27 @@ func (bmc *BatchedMetricsClient) Gauge(name string, value float64, tags []string
 
 // Distribution records a distribution metric in batch
 func (bmc *BatchedMetricsClient) Distribution(name string, value float64, tags []string, rate float64) error {
-	// For distributions, we can batch them as timing operations
-	return bmc.Timing(name, time.Duration(value)*time.Second, tags, rate)
+	bmc.mutex.Lock()
+	defer bmc.mutex.Unlock()
+
+	bmc.distributionBatch = append(bmc.distributionBatch, DistributionOperation{
+		Name:  name,
+		Value: value,
+		Tags:  tags,
+		Rate:  rate,
+	})
+
+	// Flush if batch is full
+	if len(bmc.distributionBatch) >= bmc.batchSize {
+		bmc.flushDistributionBatch()
+	}
+
+	return nil
 }
 
 // BackgroundGauge provides background gauge callbacks (not batched)
 func (bmc *BatchedMetricsClient) BackgroundGauge(name string, tags []string) (increment, decrement BackgroundGaugeCallback) {
 	return bmc.client.BackgroundGauge(name, tags)
-}
-
-// RecordPoolWaitTime records pool wait time in batch
-func (bmc *BatchedMetricsClient) RecordPoolWaitTime(poolName string, duration time.Duration) {
-	bmc.Timing("mongobouncer_pool_wait_duration_seconds", duration, []string{"database", poolName}, 1.0)
-}
-
-// SetPoolConnections sets pool connections gauge in batch
-func (bmc *BatchedMetricsClient) SetPoolConnections(poolName, state string, count float64) {
-	bmc.Gauge("mongobouncer_pool_connections_total", count, []string{"database", poolName, "state", state}, 1.0)
 }
 
 // Flush forces immediate flush of all batches
@@ -255,9 +269,23 @@ func (bmc *BatchedMetricsClient) flushGaugeBatch() {
 	bmc.gaugeBatch = bmc.gaugeBatch[:0] // Reset slice
 }
 
+// flushDistributionBatch flushes distribution batch
+func (bmc *BatchedMetricsClient) flushDistributionBatch() {
+	if len(bmc.distributionBatch) == 0 {
+		return
+	}
+
+	for _, op := range bmc.distributionBatch {
+		bmc.client.Distribution(op.Name, op.Value, op.Tags, op.Rate)
+	}
+
+	bmc.distributionBatch = bmc.distributionBatch[:0] // Reset slice
+}
+
 // flushAllBatches flushes all batches
 func (bmc *BatchedMetricsClient) flushAllBatches() {
 	bmc.flushTimingBatch()
 	bmc.flushCounterBatch()
 	bmc.flushGaugeBatch()
+	bmc.flushDistributionBatch()
 }

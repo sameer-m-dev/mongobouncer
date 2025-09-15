@@ -151,13 +151,13 @@ func createPoolMonitor(log *zap.Logger, metrics util.MetricsInterface, databaseN
 					zap.Int64("max_pool_size", poolStats.maxPoolSize),
 					zap.Float64("utilization", utilization))
 
-				_ = metrics.Gauge("mongodb_pool_active_connections", float64(poolStats.activeConnections), tags, 1)
-				_ = metrics.Gauge("mongodb_pool_total_connections", float64(poolStats.totalConnections), tags, 1)
-				_ = metrics.Gauge("mongodb_pool_max_connections", float64(poolStats.maxPoolSize), tags, 1)
-				_ = metrics.Gauge("mongodb_pool_utilization_ratio", utilization, tags, 1)
-				_ = metrics.Gauge("mongodb_pool_checkout_total", float64(poolStats.checkoutCount), tags, 1)
-				_ = metrics.Gauge("mongodb_pool_checkin_total", float64(poolStats.checkinCount), tags, 1)
-				_ = metrics.Gauge("mongodb_pool_checkout_failures_total", float64(poolStats.checkoutFailures), tags, 1)
+				_ = metrics.Gauge("pool_active_connections", float64(poolStats.activeConnections), tags, 1)
+				_ = metrics.Gauge("pool_total_connections", float64(poolStats.totalConnections), tags, 1)
+				_ = metrics.Gauge("pool_max_connections", float64(poolStats.maxPoolSize), tags, 1)
+				_ = metrics.Gauge("pool_utilization_ratio", utilization, tags, 1)
+				_ = metrics.Gauge("pool_checkout_total", float64(poolStats.checkoutCount), tags, 1)
+				_ = metrics.Gauge("pool_checkin_total", float64(poolStats.checkinCount), tags, 1)
+				_ = metrics.Gauge("pool_checkout_failures_total", float64(poolStats.checkoutFailures), tags, 1)
 			}
 		},
 	}
@@ -387,7 +387,7 @@ func (m *Mongo) SetClientOptions(opts *options.ClientOptions) {
 
 func (m *Mongo) cacheGauge(name string, count float64) {
 	if m.metrics != nil {
-		_ = m.metrics.Gauge(name, count, []string{}, 1)
+		_ = m.metrics.Gauge(name, count, []string{fmt.Sprintf("database:%s", m.databaseName)}, 1)
 	}
 }
 
@@ -443,13 +443,13 @@ func (m *Mongo) UpdatePoolMetricsForDatabase(databaseName string) {
 		zap.Int64("max_pool_size", m.poolStats.maxPoolSize),
 		zap.Float64("utilization", utilization))
 
-	_ = m.metrics.Gauge("mongodb_pool_active_connections", float64(m.poolStats.activeConnections), tags, 1)
-	_ = m.metrics.Gauge("mongodb_pool_total_connections", float64(m.poolStats.totalConnections), tags, 1)
-	_ = m.metrics.Gauge("mongodb_pool_max_connections", float64(m.poolStats.maxPoolSize), tags, 1)
-	_ = m.metrics.Gauge("mongodb_pool_utilization_ratio", utilization, tags, 1)
-	_ = m.metrics.Gauge("mongodb_pool_checkout_total", float64(m.poolStats.checkoutCount), tags, 1)
-	_ = m.metrics.Gauge("mongodb_pool_checkin_total", float64(m.poolStats.checkinCount), tags, 1)
-	_ = m.metrics.Gauge("mongodb_pool_checkout_failures_total", float64(m.poolStats.checkoutFailures), tags, 1)
+	_ = m.metrics.Gauge("pool_active_connections", float64(m.poolStats.activeConnections), tags, 1)
+	_ = m.metrics.Gauge("pool_total_connections", float64(m.poolStats.totalConnections), tags, 1)
+	_ = m.metrics.Gauge("pool_max_connections", float64(m.poolStats.maxPoolSize), tags, 1)
+	_ = m.metrics.Gauge("pool_utilization_ratio", utilization, tags, 1)
+	_ = m.metrics.Gauge("pool_checkout_total", float64(m.poolStats.checkoutCount), tags, 1)
+	_ = m.metrics.Gauge("pool_checkin_total", float64(m.poolStats.checkinCount), tags, 1)
+	_ = m.metrics.Gauge("pool_checkout_failures_total", float64(m.poolStats.checkoutFailures), tags, 1)
 }
 
 func (m *Mongo) RoundTrip(msg *Message, tags []string) (_ *Message, err error) {
@@ -782,7 +782,7 @@ func (m *Mongo) isRetryableError(err error) bool {
 func (m *Mongo) selectServer(requestCursorID int64, collection string, transDetails *TransactionDetails) (server driver.Server, err error) {
 	defer func(start time.Time) {
 		if m.metrics != nil {
-			_ = m.metrics.Timing("server_selection", time.Since(start), []string{fmt.Sprintf("success:%v", err == nil)}, 1)
+			_ = m.metrics.Timing("server_selection", time.Since(start), []string{fmt.Sprintf("success:%v", err == nil), fmt.Sprintf("database:%s", m.databaseName)}, 1)
 		}
 	}(time.Now())
 
@@ -821,6 +821,7 @@ func (m *Mongo) checkoutConnection(server driver.Server) (conn driver.Connection
 			_ = m.metrics.Timing("checkout_connection", time.Since(start), []string{
 				fmt.Sprintf("address:%s", addr),
 				fmt.Sprintf("success:%v", err == nil),
+				fmt.Sprintf("database:%s", m.databaseName),
 			}, 1)
 		}
 	}(time.Now())

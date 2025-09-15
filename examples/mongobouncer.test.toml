@@ -19,6 +19,7 @@ connect_timeout = "5s"          # Connection establishment timeout
 socket_timeout = "30s"          # Socket operation timeout
 heartbeat_interval = "10s"      # Heartbeat frequency
 auth_enabled = false
+regex_credential_passthrough = false
 topology = "sharded"
 
 # Prometheus metrics (optional but recommended)
@@ -26,11 +27,15 @@ metrics_address = "0.0.0.0:9090"
 metrics_enabled = true
 
 # Database connections - Configure these for your MongoDB setup
-[databases]
 # Application databases - wildcard route for all databases
-"*" = { connection_string = "mongodb://appuser_rs6:apppass_rs6_123@host.docker.internal:27018/app_prod_rs6?replicaSet=rs0&authSource=admin" }
-# Specific database routes
-mongobouncer_test = { connection_string = "mongodb://localhost:27022/mongobouncer_test" }
+
+[databases."*"]
+connection_string = "mongodb://127.0.0.1:27023/default?retryWrites=false"
+topology = "single"
+
+[databases.mongobouncer_test]
+connection_string = "mongodb://localhost:27022/mongobouncer_test"
+topology = "single"
 
 [databases.pool_test]
 connection_string = "mongodb://localhost:27022/pool_test"

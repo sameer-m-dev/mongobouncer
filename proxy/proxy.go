@@ -12,13 +12,9 @@ import (
 	"github.com/sameer-m-dev/mongobouncer/pool"
 	"github.com/sameer-m-dev/mongobouncer/util"
 	"go.uber.org/zap"
-
-	"github.com/sameer-m-dev/mongobouncer/mongo"
 )
 
 const restartSleep = 1 * time.Second
-
-type MongoLookup func(address string) *mongo.Mongo
 
 type Proxy struct {
 	log     *zap.Logger
@@ -28,7 +24,6 @@ type Proxy struct {
 	address string
 	unlink  bool
 
-	mongoLookup                MongoLookup
 	poolManager                *pool.Manager
 	databaseRouter             *DatabaseRouter
 	authEnabled                bool
@@ -41,7 +36,7 @@ type Proxy struct {
 	kill chan interface{}
 }
 
-func NewProxy(log *zap.Logger, metrics util.MetricsInterface, label, network, address string, unlink bool, mongoLookup MongoLookup, poolManager *pool.Manager, databaseRouter *DatabaseRouter, authEnabled bool, regexCredentialPassthrough bool, mongodbDefaults util.MongoDBClientConfig) (*Proxy, error) {
+func NewProxy(log *zap.Logger, metrics util.MetricsInterface, label, network, address string, unlink bool, poolManager *pool.Manager, databaseRouter *DatabaseRouter, authEnabled bool, regexCredentialPassthrough bool, mongodbDefaults util.MongoDBClientConfig) (*Proxy, error) {
 	if label != "" {
 		log = log.With(zap.String("cluster", label))
 	}
@@ -53,7 +48,6 @@ func NewProxy(log *zap.Logger, metrics util.MetricsInterface, label, network, ad
 		address: address,
 		unlink:  unlink,
 
-		mongoLookup:                mongoLookup,
 		poolManager:                poolManager,
 		databaseRouter:             databaseRouter,
 		authEnabled:                authEnabled,
@@ -177,7 +171,7 @@ func (p *Proxy) accept(l net.Listener) {
 				zap.String("network", p.network))
 
 			// Call handleConnection which now returns the database used
-			databaseUsed := handleConnection(log, p.metrics, p.address, c, p.mongoLookup, p.poolManager, p.kill, p.databaseRouter, p.authEnabled, p.regexCredentialPassthrough, p.mongodbDefaults)
+			databaseUsed := handleConnection(log, p.metrics, p.address, c, p.poolManager, p.kill, p.databaseRouter, p.authEnabled, p.regexCredentialPassthrough, p.mongodbDefaults)
 
 			_ = c.Close()
 			log.Debug("Client connection closed",

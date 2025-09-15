@@ -76,16 +76,9 @@ type Config struct {
 	tomlConfig *TOMLConfig
 	logger     *zap.Logger
 	metrics    util.MetricsInterface
-	clients    []client
 	network    string
 	unlink     bool
 	ping       bool
-}
-
-type client struct {
-	address string
-	label   string
-	opts    *options.ClientOptions
 }
 
 // LoadConfig loads configuration from TOML file
@@ -130,7 +123,7 @@ func LoadConfig(configPath string, verbose bool) (*Config, error) {
 	}
 
 	// Create logger
-	logger, err := createLogger(config.Mongobouncer.LogLevel, config.Mongobouncer.LogFile)
+	logger, err := CreateLogger(config.Mongobouncer.LogLevel, config.Mongobouncer.LogFile)
 	if err != nil {
 		return nil, fmt.Errorf("failed to create logger: %w", err)
 	}
@@ -154,17 +147,15 @@ func LoadConfig(configPath string, verbose bool) (*Config, error) {
 		}
 	}
 
-	// Build client configurations
-	clients, err := buildClients(config, logger)
-	if err != nil {
-		return nil, fmt.Errorf("failed to build clients: %w", err)
+	// Validate database configurations
+	if err := validateDatabaseNames(config.Databases, logger); err != nil {
+		return nil, fmt.Errorf("database configuration validation failed: %w", err)
 	}
 
 	return &Config{
 		tomlConfig: config,
 		logger:     logger,
 		metrics:    metricsClient,
-		clients:    clients,
 		network:    config.Mongobouncer.Network,
 		unlink:     config.Mongobouncer.Unlink,
 		ping:       config.Mongobouncer.Ping,
@@ -439,144 +430,8 @@ func patternsConflict(pattern1, pattern2 string) bool {
 	return matches1 > 0 && matches2 > 0 && matches1 == matches2
 }
 
-// buildClients creates client configurations from the TOML config
-func buildClients(config *TOMLConfig, logger *zap.Logger) ([]client, error) {
-	var clients []client
-
-	// Validate that databases are configured
-	if len(config.Databases) == 0 {
-		return nil, fmt.Errorf("no databases configured - MongoBouncer cannot run without database configuration")
-	}
-
-	// Validate database name conflicts
-	if err := validateDatabaseNames(config.Databases, logger); err != nil {
-		return nil, err
-	}
-
-	// For TOML config, we typically have one proxy listening address but multiple backend databases
-	// Create a single client that will handle all database connections
-
-	// Create listening address
-	address := fmt.Sprintf("%s:%d", config.Mongobouncer.ListenAddr, config.Mongobouncer.ListenPort)
-
-	// Process database configurations to determine the primary connection
-	// For now, we'll use the first configured database as the main connection
-	// In a full implementation, this would be handled by a router
-
-	var primaryURI string
-	var primaryLabel string
-
-	for dbName, dbConfigInterface := range config.Databases {
-		var uri string
-		var label string
-
-		switch dbConfig := dbConfigInterface.(type) {
-		case string:
-			// Simple connection string format
-			uri = dbConfig
-			label = dbName
-		case map[string]interface{}:
-			// Structured format - check for connection_string first
-			if connStr, ok := dbConfig["connection_string"].(string); ok && connStr != "" {
-				// Use connection_string if provided
-				uri = connStr
-			} else {
-				// Build URI from individual fields
-				host := "localhost"
-				port := 27017
-
-				if h, ok := dbConfig["host"].(string); ok {
-					host = h
-				}
-				if p, ok := dbConfig["port"].(int64); ok {
-					port = int(p)
-				}
-
-				var user, password string
-				if u, ok := dbConfig["user"].(string); ok {
-					user = u
-				}
-				if p, ok := dbConfig["password"].(string); ok {
-					password = p
-				}
-
-				// Build URI
-				if user != "" && password != "" {
-					uri = fmt.Sprintf("mongodb://%s:%s@%s:%d", user, password, host, port)
-				} else {
-					uri = fmt.Sprintf("mongodb://%s:%d", host, port)
-				}
-
-				// Add database name if specified
-				if dbname, ok := dbConfig["dbname"].(string); ok && dbname != "" {
-					uri += "/" + dbname
-				}
-			}
-
-			// Add connection options
-			params := []string{}
-			if maxPoolSize, ok := dbConfig["maxPoolSize"].(int64); ok && maxPoolSize > 0 {
-				params = append(params, fmt.Sprintf("maxPoolSize=%d", maxPoolSize))
-			} else if poolSize, ok := dbConfig["pool_size"].(int64); ok && poolSize > 0 {
-				params = append(params, fmt.Sprintf("maxPoolSize=%d", poolSize))
-			}
-			if minPoolSize, ok := dbConfig["minPoolSize"].(int64); ok && minPoolSize > 0 {
-				params = append(params, fmt.Sprintf("minPoolSize=%d", minPoolSize))
-			}
-			if maxIdleTimeMS, ok := dbConfig["maxIdleTimeMS"].(int64); ok && maxIdleTimeMS > 0 {
-				params = append(params, fmt.Sprintf("maxIdleTimeMS=%d", maxIdleTimeMS))
-			}
-			if serverSelectionTimeoutMS, ok := dbConfig["serverSelectionTimeoutMS"].(int64); ok && serverSelectionTimeoutMS > 0 {
-				params = append(params, fmt.Sprintf("serverSelectionTimeoutMS=%d", serverSelectionTimeoutMS))
-			}
-
-			if len(params) > 0 {
-				uri += "?" + strings.Join(params, "&")
-			}
-
-			// Set label
-			if l, ok := dbConfig["label"].(string); ok {
-				label = l
-			} else {
-				label = dbName
-			}
-		}
-
-		// Use the first database as primary (for simplicity)
-		if primaryURI == "" {
-			primaryURI = uri
-			primaryLabel = label
-		}
-
-		logger.Info("Configured database",
-			zap.String("name", dbName),
-			zap.String("uri", sanitizeURI(uri)),
-			zap.String("label", label))
-	}
-
-	// Create client options using the primary URI
-	if primaryURI == "" {
-		primaryURI = "mongodb://localhost:27017"
-		primaryLabel = "default"
-	}
-
-	opts := options.Client().ApplyURI(primaryURI)
-
-	// Create temporary config instance to apply MongoDB client settings
-	tempConfig := &Config{tomlConfig: config, logger: logger}
-	opts = tempConfig.ApplyMongoDBClientSettings(opts, "default", nil)
-
-	clients = append(clients, client{
-		address: address,
-		label:   primaryLabel,
-		opts:    opts,
-	})
-
-	return clients, nil
-}
-
-// createLogger creates a zap logger with the specified level and output
-func createLogger(level, logFile string) (*zap.Logger, error) {
+// CreateLogger creates a zap logger with the specified level and output
+func CreateLogger(level, logFile string) (*zap.Logger, error) {
 	var zapLevel zapcore.Level
 	switch strings.ToLower(level) {
 	case "debug":

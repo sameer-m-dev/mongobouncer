@@ -54,7 +54,7 @@ var (
 			Help:    "Round trip time sending a request and receiving a response from MongoDB",
 			Buckets: []float64{0.001, 0.005, 0.01, 0.025, 0.05, 0.1, 0.25, 0.5, 1, 2.5, 5, 10, 25, 50, 100, 250, 500, 1000},
 		},
-		[]string{},
+		[]string{"database"},
 	)
 
 	// Message size metrics
@@ -82,7 +82,7 @@ var (
 			Name: "mongobouncer_cursors_active_total",
 			Help: "Number of open cursors being tracked (for cursor -> server mapping)",
 		},
-		[]string{},
+		[]string{"database"},
 	)
 
 	transactionsActive = prometheus.NewGaugeVec(
@@ -90,7 +90,7 @@ var (
 			Name: "mongobouncer_transactions_active_total",
 			Help: "Number of transactions being tracked (for client sessions -> server mapping)",
 		},
-		[]string{},
+		[]string{"database"},
 	)
 
 	// MongoDB driver metrics
@@ -100,7 +100,7 @@ var (
 			Help:    "Go driver server selection timing",
 			Buckets: []float64{0.001, 0.005, 0.01, 0.025, 0.05, 0.1, 0.25, 0.5, 1, 2.5, 5, 10, 25, 50, 100, 250, 500, 1000},
 		},
-		[]string{},
+		[]string{"database"},
 	)
 
 	checkoutConnectionDuration = prometheus.NewHistogramVec(
@@ -109,24 +109,7 @@ var (
 			Help:    "Go driver connection checkout timing",
 			Buckets: []float64{0.001, 0.005, 0.01, 0.025, 0.05, 0.1, 0.25, 0.5, 1, 2.5, 5, 10, 25, 50, 100, 250, 500, 1000},
 		},
-		[]string{},
-	)
-
-	// Connection pool metrics
-	poolCheckedOutConnections = prometheus.NewGaugeVec(
-		prometheus.GaugeOpts{
-			Name: "mongobouncer_pool_checked_out_connections_total",
-			Help: "Number of connections checked out from the Go driver connection pool",
-		},
-		[]string{},
-	)
-
-	poolOpenConnections = prometheus.NewGaugeVec(
-		prometheus.GaugeOpts{
-			Name: "mongobouncer_pool_open_connections_total",
-			Help: "Number of open connections from the Go driver to MongoDB",
-		},
-		[]string{},
+		[]string{"database"},
 	)
 
 	// Pool events
@@ -136,33 +119,6 @@ var (
 			Help: "Go driver connection pool events",
 		},
 		[]string{"event_type"},
-	)
-
-	// Pool statistics
-	poolWaitTime = prometheus.NewHistogramVec(
-		prometheus.HistogramOpts{
-			Name:    "mongobouncer_pool_wait_duration_seconds",
-			Help:    "Time spent waiting for connections from the pool",
-			Buckets: prometheus.DefBuckets,
-		},
-		[]string{"database"},
-	)
-
-	poolConnections = prometheus.NewGaugeVec(
-		prometheus.GaugeOpts{
-			Name: "mongobouncer_pool_connections_total",
-			Help: "Current number of connections in the pool",
-		},
-		[]string{"database", "state"}, // state: available, in_use
-	)
-
-	// Additional metrics for comprehensive dashboard
-	serverConnections = prometheus.NewGaugeVec(
-		prometheus.GaugeOpts{
-			Name: "mongobouncer_server_connections_total",
-			Help: "Current number of server connections by state",
-		},
-		[]string{"state"}, // state: active, idle, used, testing, login
 	)
 
 	clientConnections = prometheus.NewGaugeVec(
@@ -189,124 +145,59 @@ var (
 		[]string{"database", "error_type"},
 	)
 
-	authenticationFailuresTotal = prometheus.NewCounterVec(
-		prometheus.CounterOpts{
-			Name: "mongobouncer_authentication_failures_total",
-			Help: "Total number of authentication failures",
-		},
-		[]string{},
-	)
-
-	// MongoDB driver pool metrics
-	mongodbPoolActiveConnections = prometheus.NewGaugeVec(
+	// MongoBouncer pool metrics
+	poolActiveConnections = prometheus.NewGaugeVec(
 		prometheus.GaugeOpts{
-			Name: "mongobouncer_mongodb_pool_active_connections",
-			Help: "Number of active connections in MongoDB driver pool",
+			Name: "mongobouncer_pool_active_connections",
+			Help: "Number of active connections in MongoBouncer pool",
 		},
 		[]string{"database"},
 	)
 
-	mongodbPoolTotalConnections = prometheus.NewGaugeVec(
+	poolTotalConnections = prometheus.NewGaugeVec(
 		prometheus.GaugeOpts{
-			Name: "mongobouncer_mongodb_pool_total_connections",
-			Help: "Total number of connections in MongoDB driver pool",
-		},
-		[]string{"database"},
-	)
-
-	mongodbPoolMaxConnections = prometheus.NewGaugeVec(
-		prometheus.GaugeOpts{
-			Name: "mongobouncer_mongodb_pool_max_connections",
-			Help: "Maximum number of connections allowed in MongoDB driver pool",
-		},
-		[]string{"database"},
-	)
-
-	mongodbPoolUtilizationRatio = prometheus.NewGaugeVec(
-		prometheus.GaugeOpts{
-			Name: "mongobouncer_mongodb_pool_utilization_ratio",
-			Help: "MongoDB driver pool utilization ratio (active/max)",
-		},
-		[]string{"database"},
-	)
-
-	mongodbPoolCheckoutTotal = prometheus.NewCounterVec(
-		prometheus.CounterOpts{
-			Name: "mongobouncer_mongodb_pool_checkout_total",
-			Help: "Total number of connection checkouts from MongoDB driver pool",
-		},
-		[]string{"database"},
-	)
-
-	mongodbPoolCheckinTotal = prometheus.NewCounterVec(
-		prometheus.CounterOpts{
-			Name: "mongobouncer_mongodb_pool_checkin_total",
-			Help: "Total number of connection checkins to MongoDB driver pool",
-		},
-		[]string{"database"},
-	)
-
-	mongodbPoolCheckoutFailuresTotal = prometheus.NewCounterVec(
-		prometheus.CounterOpts{
-			Name: "mongobouncer_mongodb_pool_checkout_failures_total",
-			Help: "Total number of connection checkout failures from MongoDB driver pool",
-		},
-		[]string{"database"},
-	)
-
-	poolTimeoutsTotal = prometheus.NewCounterVec(
-		prometheus.CounterOpts{
-			Name: "mongobouncer_pool_timeouts_total",
-			Help: "Total number of connection pool timeouts",
-		},
-		[]string{"database"},
-	)
-
-	bytesTransferredTotal = prometheus.NewCounterVec(
-		prometheus.CounterOpts{
-			Name: "mongobouncer_bytes_total",
-			Help: "Total bytes transferred by direction",
-		},
-		[]string{"direction"}, // direction: sent, received
-	)
-
-	poolQueueDepth = prometheus.NewGaugeVec(
-		prometheus.GaugeOpts{
-			Name: "mongobouncer_pool_queue_depth",
-			Help: "Current number of requests waiting for connections",
+			Name: "mongobouncer_pool_total_connections",
+			Help: "Total number of connections in MongoBouncer pool",
 		},
 		[]string{"database"},
 	)
 
 	poolMaxConnections = prometheus.NewGaugeVec(
 		prometheus.GaugeOpts{
-			Name: "mongobouncer_pool_max_connections_total",
-			Help: "Maximum number of connections allowed in pool",
+			Name: "mongobouncer_pool_max_connections",
+			Help: "Maximum number of connections allowed in MongoBouncer pool",
 		},
 		[]string{"database"},
 	)
 
-	// Pool exhaustion and capacity metrics
-	clientsWaitingForServer = prometheus.NewGaugeVec(
-		prometheus.GaugeOpts{
-			Name: "mongobouncer_clients_waiting_for_server_total",
-			Help: "Number of client connections waiting for server connections",
-		},
-		[]string{"database"},
-	)
-
-	poolUtilization = prometheus.NewGaugeVec(
+	poolUtilizationRatio = prometheus.NewGaugeVec(
 		prometheus.GaugeOpts{
 			Name: "mongobouncer_pool_utilization_ratio",
-			Help: "Pool utilization ratio (active connections / max connections)",
+			Help: "MongoBouncer pool utilization ratio (active/max)",
 		},
 		[]string{"database"},
 	)
 
-	poolExhaustionEvents = prometheus.NewCounterVec(
+	poolCheckoutTotal = prometheus.NewCounterVec(
 		prometheus.CounterOpts{
-			Name: "mongobouncer_pool_exhaustion_events_total",
-			Help: "Total number of pool exhaustion events",
+			Name: "mongobouncer_pool_checkout_total",
+			Help: "Total number of connection checkouts from MongoBouncer pool",
+		},
+		[]string{"database"},
+	)
+
+	poolCheckinTotal = prometheus.NewCounterVec(
+		prometheus.CounterOpts{
+			Name: "mongobouncer_pool_checkin_total",
+			Help: "Total number of connection checkins to MongoBouncer pool",
+		},
+		[]string{"database"},
+	)
+
+	poolCheckoutFailuresTotal = prometheus.NewCounterVec(
+		prometheus.CounterOpts{
+			Name: "mongobouncer_pool_checkout_failures_total",
+			Help: "Total number of connection checkout failures from MongoBouncer pool",
 		},
 		[]string{"database"},
 	)
@@ -324,22 +215,6 @@ var (
 		prometheus.GaugeOpts{
 			Name: "mongobouncer_sessions_active_total",
 			Help: "Number of active client sessions",
-		},
-		[]string{},
-	)
-
-	cursorsOpened = prometheus.NewCounterVec(
-		prometheus.CounterOpts{
-			Name: "mongobouncer_cursors_opened_total",
-			Help: "Total number of cursors opened",
-		},
-		[]string{"database"},
-	)
-
-	cursorsClosed = prometheus.NewCounterVec(
-		prometheus.CounterOpts{
-			Name: "mongobouncer_cursors_closed_total",
-			Help: "Total number of cursors closed",
 		},
 		[]string{"database"},
 	)
@@ -360,28 +235,12 @@ var (
 		[]string{"database"},
 	)
 
-	transactionsTotal = prometheus.NewCounterVec(
-		prometheus.CounterOpts{
-			Name: "mongobouncer_transactions_total",
-			Help: "Total number of transactions processed",
-		},
-		[]string{"database", "result"}, // result: committed, aborted
-	)
-
 	maxClientConnections = prometheus.NewGaugeVec(
 		prometheus.GaugeOpts{
 			Name: "mongobouncer_max_client_connections_total",
 			Help: "Maximum allowed client connections",
 		},
 		[]string{},
-	)
-
-	maxUserConnections = prometheus.NewGaugeVec(
-		prometheus.GaugeOpts{
-			Name: "mongobouncer_max_user_connections_total",
-			Help: "Maximum allowed connections per user",
-		},
-		[]string{"user"},
 	)
 
 	clientWaitTime = prometheus.NewHistogramVec(
@@ -401,8 +260,6 @@ type MetricsInterface interface {
 	Gauge(name string, value float64, tags []string, rate float64) error
 	Distribution(name string, value float64, tags []string, rate float64) error
 	BackgroundGauge(name string, tags []string) (increment, decrement BackgroundGaugeCallback)
-	RecordPoolWaitTime(poolName string, duration time.Duration)
-	SetPoolConnections(poolName, state string, count float64)
 	Flush() error
 	Close() error
 	Shutdown(ctx context.Context) error
@@ -433,43 +290,25 @@ func NewMetricsClient(logger *zap.Logger, metricsAddr string) (*MetricsClient, e
 		transactionsActive,
 		serverSelectionDuration,
 		checkoutConnectionDuration,
-		poolCheckedOutConnections,
-		poolOpenConnections,
-		poolEventCounters,
-		poolWaitTime,
-		poolConnections,
 		// New comprehensive metrics
-		serverConnections,
 		clientConnections,
 		requestsTotal,
 		errorsTotal,
-		authenticationFailuresTotal,
-		poolTimeoutsTotal,
-		bytesTransferredTotal,
-		poolQueueDepth,
-		poolMaxConnections,
-		// New pool monitoring metrics
-		clientsWaitingForServer,
-		poolUtilization,
-		poolExhaustionEvents,
-		poolConnectionCheckoutDuration,
 		sessionsActive,
-		cursorsOpened,
-		cursorsClosed,
 		ismasterCommandsTotal,
 		serverSelectionTotal,
-		transactionsTotal,
 		maxClientConnections,
-		maxUserConnections,
 		clientWaitTime,
-		// MongoDB driver pool metrics
-		mongodbPoolActiveConnections,
-		mongodbPoolTotalConnections,
-		mongodbPoolMaxConnections,
-		mongodbPoolUtilizationRatio,
-		mongodbPoolCheckoutTotal,
-		mongodbPoolCheckinTotal,
-		mongodbPoolCheckoutFailuresTotal,
+		// MongoBouncer pool metrics
+		poolEventCounters,
+		poolActiveConnections,
+		poolTotalConnections,
+		poolMaxConnections,
+		poolUtilizationRatio,
+		poolCheckoutTotal,
+		poolCheckinTotal,
+		poolCheckoutFailuresTotal,
+		poolConnectionCheckoutDuration,
 	)
 
 	// Create HTTP server for metrics endpoint
@@ -515,11 +354,14 @@ func (m *MetricsClient) Timing(name string, duration time.Duration, tags []strin
 	case "handle_message":
 		messageHandleDuration.WithLabelValues(success).Observe(duration.Seconds())
 	case "round_trip":
-		roundTripDuration.WithLabelValues().Observe(duration.Seconds())
+		database := parseDatabaseTag(tags)
+		roundTripDuration.WithLabelValues(database).Observe(duration.Seconds())
 	case "server_selection":
-		serverSelectionDuration.WithLabelValues().Observe(duration.Seconds())
+		database := parseDatabaseTag(tags)
+		serverSelectionDuration.WithLabelValues(database).Observe(duration.Seconds())
 	case "checkout_connection":
-		checkoutConnectionDuration.WithLabelValues().Observe(duration.Seconds())
+		database := parseDatabaseTag(tags)
+		checkoutConnectionDuration.WithLabelValues(database).Observe(duration.Seconds())
 	case "client_wait":
 		database := parseDatabaseTag(tags)
 		clientWaitTime.WithLabelValues(database).Observe(duration.Seconds())
@@ -542,35 +384,11 @@ func (m *MetricsClient) Incr(name string, tags []string, rate float64) error {
 		database := parseDatabaseTag(tags)
 		errorType := parseErrorTag(tags)
 		errorsTotal.WithLabelValues(database, errorType).Inc()
-	case "authentication_failure":
-		authenticationFailuresTotal.WithLabelValues().Inc()
-	case "pool_timeout":
-		database := parseDatabaseTag(tags)
-		poolTimeoutsTotal.WithLabelValues(database).Inc()
-	case "bytes_sent":
-		bytesTransferredTotal.WithLabelValues("sent").Add(rate)
-	case "bytes_received":
-		bytesTransferredTotal.WithLabelValues("received").Add(rate)
-	case "cursor_opened":
-		database := parseDatabaseTag(tags)
-		cursorsOpened.WithLabelValues(database).Inc()
-	case "cursor_closed":
-		database := parseDatabaseTag(tags)
-		cursorsClosed.WithLabelValues(database).Inc()
 	case "ismaster_command":
 		ismasterCommandsTotal.WithLabelValues().Inc()
 	case "server_selection":
 		database := parseDatabaseTag(tags)
 		serverSelectionTotal.WithLabelValues(database).Inc()
-	case "transaction_committed":
-		database := parseDatabaseTag(tags)
-		transactionsTotal.WithLabelValues(database, "committed").Inc()
-	case "transaction_aborted":
-		database := parseDatabaseTag(tags)
-		transactionsTotal.WithLabelValues(database, "aborted").Inc()
-	case "pool_exhaustion":
-		database := parseDatabaseTag(tags)
-		poolExhaustionEvents.WithLabelValues(database).Inc()
 	default:
 		// Handle pool events
 		poolEventCounters.WithLabelValues(name).Inc()
@@ -585,59 +403,40 @@ func (m *MetricsClient) Gauge(name string, value float64, tags []string, rate fl
 	case "open_connections":
 		openConnections.WithLabelValues("client").Set(value)
 	case "cursors":
-		cursorsActive.WithLabelValues().Set(value)
+		database := parseDatabaseTag(tags)
+		cursorsActive.WithLabelValues(database).Set(value)
 	case "transactions":
-		transactionsActive.WithLabelValues().Set(value)
-	case "pool.checked_out_connections":
-		poolCheckedOutConnections.WithLabelValues().Set(value)
-	case "pool.open_connections":
-		poolOpenConnections.WithLabelValues().Set(value)
-	case "server_connections":
-		state := parseStateTag(tags)
-		serverConnections.WithLabelValues(state).Set(value)
+		database := parseDatabaseTag(tags)
+		transactionsActive.WithLabelValues(database).Set(value)
 	case "client_connections":
 		state := parseStateTag(tags)
 		clientConnections.WithLabelValues(state).Set(value)
-	case "pool_queue_depth":
+	case "sessions_active":
 		database := parseDatabaseTag(tags)
-		poolQueueDepth.WithLabelValues(database).Set(value)
+		sessionsActive.WithLabelValues(database).Add(value)
+	case "max_client_connections":
+		maxClientConnections.WithLabelValues().Set(value)
+	case "pool_active_connections":
+		database := parseDatabaseTag(tags)
+		poolActiveConnections.WithLabelValues(database).Set(value)
+	case "pool_total_connections":
+		database := parseDatabaseTag(tags)
+		poolTotalConnections.WithLabelValues(database).Set(value)
 	case "pool_max_connections":
 		database := parseDatabaseTag(tags)
 		poolMaxConnections.WithLabelValues(database).Set(value)
-	case "clients_waiting_for_server":
+	case "pool_utilization_ratio":
 		database := parseDatabaseTag(tags)
-		clientsWaitingForServer.WithLabelValues(database).Set(value)
-	case "pool_utilization":
+		poolUtilizationRatio.WithLabelValues(database).Set(value)
+	case "pool_checkout_total":
 		database := parseDatabaseTag(tags)
-		poolUtilization.WithLabelValues(database).Set(value)
-	case "sessions_active":
-		sessionsActive.WithLabelValues().Set(value)
-	case "max_client_connections":
-		maxClientConnections.WithLabelValues().Set(value)
-	case "max_user_connections":
-		user := parseUserTag(tags)
-		maxUserConnections.WithLabelValues(user).Set(value)
-	case "mongodb_pool_active_connections":
+		poolCheckoutTotal.WithLabelValues(database).Add(value)
+	case "pool_checkin_total":
 		database := parseDatabaseTag(tags)
-		mongodbPoolActiveConnections.WithLabelValues(database).Set(value)
-	case "mongodb_pool_total_connections":
+		poolCheckinTotal.WithLabelValues(database).Add(value)
+	case "pool_checkout_failures_total":
 		database := parseDatabaseTag(tags)
-		mongodbPoolTotalConnections.WithLabelValues(database).Set(value)
-	case "mongodb_pool_max_connections":
-		database := parseDatabaseTag(tags)
-		mongodbPoolMaxConnections.WithLabelValues(database).Set(value)
-	case "mongodb_pool_utilization_ratio":
-		database := parseDatabaseTag(tags)
-		mongodbPoolUtilizationRatio.WithLabelValues(database).Set(value)
-	case "mongodb_pool_checkout_total":
-		database := parseDatabaseTag(tags)
-		mongodbPoolCheckoutTotal.WithLabelValues(database).Add(value)
-	case "mongodb_pool_checkin_total":
-		database := parseDatabaseTag(tags)
-		mongodbPoolCheckinTotal.WithLabelValues(database).Add(value)
-	case "mongodb_pool_checkout_failures_total":
-		database := parseDatabaseTag(tags)
-		mongodbPoolCheckoutFailuresTotal.WithLabelValues(database).Add(value)
+		poolCheckoutFailuresTotal.WithLabelValues(database).Add(value)
 	}
 
 	return nil
@@ -754,15 +553,6 @@ func parseTagsToLabels(tags []string) []string {
 	}
 
 	return labels
-}
-
-// Additional helper functions for pool metrics
-func (m *MetricsClient) RecordPoolWaitTime(poolName string, duration time.Duration) {
-	poolWaitTime.WithLabelValues(poolName).Observe(duration.Seconds())
-}
-
-func (m *MetricsClient) SetPoolConnections(poolName, state string, count float64) {
-	poolConnections.WithLabelValues(poolName, state).Set(count)
 }
 
 func (m *MetricsClient) Flush() error {

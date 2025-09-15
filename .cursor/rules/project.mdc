@@ -186,7 +186,13 @@ go build -o bin/mongobouncer .
 ./mongobouncer -config mongobouncer.toml
 
 # Docker deployment
+# Linux
 docker build -t mongobouncer .
+
+# MacOS
+docker buildx build --platform linux/amd64 -t mongobouncer -f Dockerfile .
+
+# Run
 docker run -p 27017:27017 -p 9090:9090 mongobouncer
 ```
 

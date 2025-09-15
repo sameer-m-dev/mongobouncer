@@ -25,7 +25,7 @@ func main() {
 	rand.New(rand.NewSource(time.Now().UnixNano()))
 
 	// Get test count from command line or use default
-	testCount := 100 // Default number of test scenarios
+	testCount := 10 // Default number of test scenarios
 	if len(os.Args) > 1 {
 		if count, err := strconv.Atoi(os.Args[1]); err == nil && count > 0 {
 			testCount = count
@@ -82,7 +82,7 @@ func main() {
 func testConcurrentConnectionsDynamic(databaseName string, operationCount int) (bool, int, time.Duration) {
 	// Connect to MongoBouncer
 	client, err := mongo.Connect(context.Background(),
-		options.Client().ApplyURI("mongodb://localhost:27017"))
+		options.Client().ApplyURI(fmt.Sprintf("mongodb://localhost:27017/%s?retryWrites=false", databaseName)))
 	if err != nil {
 		log.Printf("Failed to connect: %v", err)
 		return false, 0, 0

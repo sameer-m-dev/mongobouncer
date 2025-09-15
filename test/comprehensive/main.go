@@ -1676,7 +1676,7 @@ func (t *MongoTester) Close() error {
 // Main function
 func main() {
 	var (
-		connectionString = flag.String("connection", "mongodb://localhost:27017", "MongoDB connection string")
+		connectionString = flag.String("connection", "mongodb://localhost:27017/mongobouncer_test?retryWrites=false", "MongoDB connection string")
 		databaseName     = flag.String("database", "mongobouncer_test", "Database name for testing")
 		generateHTML     = flag.Bool("generate-html", false, "Generate HTML report")
 		help             = flag.Bool("help", false, "Show help message")
@@ -1698,7 +1698,7 @@ func main() {
 		fmt.Println("  MONGODB_DATABASE or MONGO_DB - Database name")
 		fmt.Println()
 		fmt.Println("Examples:")
-		fmt.Println("  go run test/comprehensive/main.go test/comprehensive/report.go --generate-html -connection mongodb://localhost:27016")
+		fmt.Println("  go run test/comprehensive/main.go test/comprehensive/report.go --generate-html -connection mongodb://localhost:27017/mongobouncer_test?retryWrites=false")
 		fmt.Println("  MONGO_URL=mongodb://localhost:27016 go run test/comprehensive/main.go test/comprehensive/report.go --generate-html")
 		fmt.Println()
 		fmt.Println("Test Categories:")

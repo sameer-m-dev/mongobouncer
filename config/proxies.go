@@ -14,19 +14,6 @@ import (
 // Proxies creates proxy instances from the configuration
 func (c *Config) Proxies(log *zap.Logger) ([]*proxy.Proxy, error) {
 
-	mongos := make(map[string]*mongo.Mongo)
-	for _, client := range c.clients {
-		m, err := mongo.Connect(log, c.metrics, client.opts, c.ping)
-		if err != nil {
-			return nil, err
-		}
-		mongos[client.address] = m
-	}
-
-	mongoLookup := func(address string) *mongo.Mongo {
-		return mongos[address]
-	}
-
 	// Create database router for wildcard database support
 	databaseRouter := proxy.NewDatabaseRouter(log)
 
@@ -96,13 +83,15 @@ func (c *Config) Proxies(log *zap.Logger) ([]*proxy.Proxy, error) {
 	)
 
 	var proxies []*proxy.Proxy
-	for _, client := range c.clients {
-		p, err := proxy.NewProxy(log, c.metrics, client.label, c.network, client.address, c.unlink, mongoLookup, poolManager, databaseRouter, c.tomlConfig.Mongobouncer.AuthEnabled, c.tomlConfig.Mongobouncer.RegexCredentialPassthrough, c.tomlConfig.Mongobouncer.MongoDBConfig)
-		if err != nil {
-			return nil, err
-		}
-		proxies = append(proxies, p)
+
+	// Create a single proxy instance for the configured listen address
+	listenAddress := fmt.Sprintf("%s:%d", c.tomlConfig.Mongobouncer.ListenAddr, c.tomlConfig.Mongobouncer.ListenPort)
+
+	p, err := proxy.NewProxy(log, c.metrics, "mongobouncer", c.network, listenAddress, c.unlink, poolManager, databaseRouter, c.tomlConfig.Mongobouncer.AuthEnabled, c.tomlConfig.Mongobouncer.RegexCredentialPassthrough, c.tomlConfig.Mongobouncer.MongoDBConfig)
+	if err != nil {
+		return nil, err
 	}
+	proxies = append(proxies, p)
 
 	return proxies, nil
 }

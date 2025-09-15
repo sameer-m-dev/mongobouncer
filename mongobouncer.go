@@ -29,10 +29,15 @@ func main() {
 	}
 
 	// Load configuration
+	logger, err := config.CreateLogger("info", "")
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "Failed to create logger: %v\n", err)
+		os.Exit(1)
+	}
+
 	c, err := config.LoadConfig(*configFile, *verbose)
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "Configuration error: %v\n", err)
-		os.Exit(1)
+		logger.Fatal("Configuration error", zap.Error(err))
 	}
 
 	run(c)
@@ -115,7 +120,7 @@ func shutdownOnSignal(log *zap.Logger, shutdownFunc func(), killFunc func()) {
 
 				if sig == os.Interrupt {
 					time.AfterFunc(1*time.Second, func() {
-						fmt.Println("Ctrl-C again to kill incoming connections")
+						log.Warn("Ctrl-C again to kill incoming connections")
 					})
 				}
 			} else if sig == os.Interrupt {

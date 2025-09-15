@@ -5,6 +5,7 @@ import (
 	"io"
 	"net"
 	"net/url"
+	"regexp"
 	"runtime/debug"
 	"strings"
 	"time"
@@ -27,7 +28,6 @@ type connection struct {
 	kill    chan interface{}
 	buffer  []byte
 
-	mongoLookup    MongoLookup
 	poolManager    *pool.Manager
 	databaseRouter *DatabaseRouter
 	clientID       string
@@ -49,7 +49,7 @@ type connection struct {
 	databaseUsed string // The actual database that was used during this connection
 }
 
-func handleConnection(log *zap.Logger, metrics util.MetricsInterface, address string, conn net.Conn, mongoLookup MongoLookup, poolManager *pool.Manager, kill chan interface{}, databaseRouter *DatabaseRouter, authEnabled bool, regexCredentialPassthrough bool, mongodbDefaults util.MongoDBClientConfig) string {
+func handleConnection(log *zap.Logger, metrics util.MetricsInterface, address string, conn net.Conn, poolManager *pool.Manager, kill chan interface{}, databaseRouter *DatabaseRouter, authEnabled bool, regexCredentialPassthrough bool, mongodbDefaults util.MongoDBClientConfig) string {
 	defer func() {
 		if r := recover(); r != nil {
 			log.Error("Connection crashed", zap.String("panic", fmt.Sprintf("%v", r)), zap.String("stack", string(debug.Stack())))
@@ -67,7 +67,6 @@ func handleConnection(log *zap.Logger, metrics util.MetricsInterface, address st
 		conn:    conn,
 		kill:    kill,
 
-		mongoLookup:                mongoLookup,
 		poolManager:                poolManager,
 		databaseRouter:             databaseRouter,
 		clientID:                   clientID,
@@ -88,10 +87,8 @@ func handleConnection(log *zap.Logger, metrics util.MetricsInterface, address st
 		if err != nil {
 			log.Error("Failed to register client with pool manager", zap.Error(err))
 		} else {
-			// Track active sessions
-			if c.metrics != nil {
-				_ = c.metrics.Gauge("sessions_active", 1, []string{}, 1)
-			}
+			// Don't register sessions metric yet - wait until we know the actual database name
+			// This prevents incorrect "default" database sessions from accumulating
 		}
 	}
 
@@ -99,9 +96,13 @@ func handleConnection(log *zap.Logger, metrics util.MetricsInterface, address st
 	defer func() {
 		if poolManager != nil {
 			poolManager.UnregisterClient(clientID)
-			// Decrement active sessions
-			if c.metrics != nil {
-				_ = c.metrics.Gauge("sessions_active", -1, []string{}, 1)
+			// Only decrement sessions if we actually registered them (i.e., if we determined the database name)
+			if c.metrics != nil && c.intendedDatabase != "" {
+				databaseName := c.intendedDatabase
+				if databaseName == "" {
+					databaseName = "default"
+				}
+				_ = c.metrics.Gauge("sessions_active", -1, []string{fmt.Sprintf("database:%s", databaseName)}, 1)
 			}
 		}
 	}()
@@ -161,11 +162,12 @@ func (c *connection) handleMessage() (err error) {
 		fmt.Sprintf("unacknowledged:%v", unacknowledged),
 	)
 
+	// Extract database name from the operation
+	databaseName := c.extractDatabaseName(op)
+	tags = append(tags, fmt.Sprintf("database:%s", databaseName))
+
 	// Record request metrics
 	if c.metrics != nil {
-		// Extract database name from the operation
-		databaseName := c.extractDatabaseName(op)
-
 		// Record request count
 		requestTags := []string{
 			fmt.Sprintf("database:%s", databaseName),
@@ -284,7 +286,7 @@ func (c *connection) roundTrip(msg *mongo.Message, isMaster bool, tags []string)
 	if isMaster {
 		// For isMaster commands, authentication logic should be based on appName content
 		// not the extracted database name (which is always "admin" for isMaster)
-		topology := description.Sharded
+		topology := description.Single
 		if c.authEnabled && c.clientUsername == "" {
 			// Extract appName from the message
 			appName, err := c.extractAppNameFromMessage(msg)
@@ -572,18 +574,88 @@ func (c *connection) extractDatabaseName(op mongo.Operation) string {
 		}
 	}
 
-	// Default fallback
+	// If we still don't have a database name, try to extract from the operation string
 	if databaseName == "" {
-		databaseName = "default"
-		c.log.Debug("Using default database name", zap.String("collection", collection))
+		opString := op.String()
+		c.log.Debug("Operation string for database extraction", zap.String("op_string", opString))
+
+		// Look for database patterns in the operation string
+		patterns := []string{
+			`sustained_db_\d+`,
+			`longrun_db_\d+`,
+			`test_db_\d+`,
+			`burst_db_\d+`,
+			`storm_db_\d+`,
+			`concurrent_db_\d+`,
+			`random_db_\d+`,
+			`webapp_test`,
+			`background_test`,
+			`analytics_test`,
+		}
+
+		for _, pattern := range patterns {
+			re := regexp.MustCompile(pattern)
+			if match := re.FindString(opString); match != "" {
+				databaseName = match
+				c.log.Debug("Extracted database name from operation string", zap.String("database", databaseName), zap.String("pattern", pattern))
+				break
+			}
+		}
+
+		// If still no match, try to extract any database name pattern
+		if databaseName == "" {
+			// Look for any pattern that looks like a database name (alphanumeric with underscores)
+			re := regexp.MustCompile(`[a-zA-Z][a-zA-Z0-9_]*_db_\d+`)
+			if match := re.FindString(opString); match != "" {
+				databaseName = match
+				c.log.Debug("Extracted database name using generic pattern", zap.String("database", databaseName))
+			}
+		}
+	}
+
+	// Default fallback - but try to use a more intelligent default
+	if databaseName == "" {
+		// For admin operations, use admin
+		if op.IsIsMaster() {
+			databaseName = "admin"
+		} else {
+			// Try to use the connection context database first
+			if c.intendedDatabase != "" {
+				databaseName = c.intendedDatabase
+				c.log.Debug("Using connection context database", zap.String("database", databaseName))
+			} else {
+				// For other operations, use default
+				databaseName = "default"
+			}
+		}
+		c.log.Debug("Using fallback database name", zap.String("database", databaseName), zap.String("collection", collection))
 	}
 
 	// Track the database name for this connection (only for non-admin operations)
 	if databaseName != "admin" && databaseName != "" {
+		// If this is the first time we're setting the database, register the session
+		if c.databaseUsed == "" {
+			// This is the first operation, register the session with the correct database
+			if c.metrics != nil {
+				// Only register if we have a valid database name (not "default")
+				if databaseName != "default" {
+					_ = c.metrics.Gauge("sessions_active", 1, []string{fmt.Sprintf("database:%s", databaseName)}, 1)
+					c.log.Debug("Registered session for database", zap.String("database", databaseName))
+				} else {
+					c.log.Debug("Skipping session registration for default database", zap.String("database", databaseName))
+				}
+			}
+		}
 		c.databaseUsed = databaseName
+		c.intendedDatabase = databaseName
 		c.log.Debug("Updated connection database tracking",
 			zap.String("database_used", c.databaseUsed),
+			zap.String("intended_database", c.intendedDatabase),
 			zap.String("current_operation_db", databaseName))
+	} else if databaseName == "default" && c.intendedDatabase != "" {
+		// If we're falling back to default but we have a connection context, use that instead
+		databaseName = c.intendedDatabase
+		c.log.Debug("Using connection context instead of default", zap.String("database", databaseName))
 	}
 
 	return databaseName

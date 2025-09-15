@@ -86,14 +86,14 @@ func main() {
 func testConcurrentConnections(numWorkers int) bool {
 	// Connect to MongoBouncer
 	client, err := mongo.Connect(context.Background(),
-		options.Client().ApplyURI("mongodb://localhost:27017/app_prod_rs6?retryWrites=true"))
+		options.Client().ApplyURI("mongodb://localhost:27017/pool_test?retryWrites=false"))
 	if err != nil {
 		log.Printf("Failed to connect: %v", err)
 		return false
 	}
 	defer client.Disconnect(context.Background())
 
-	db := client.Database("app_prod_rs6")
+	db := client.Database("pool_test")
 	coll := db.Collection("test_collection")
 
 	// Clean up

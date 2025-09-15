@@ -389,13 +389,13 @@ func TestBuildClientsNoDatabases(t *testing.T) {
 		Databases: make(map[string]interface{}),
 	}
 
-	_, err := buildClients(config, logger)
+	err := validateDatabaseNames(config.Databases, logger)
 	assert.Error(t, err)
 	assert.Contains(t, err.Error(), "no databases configured - MongoBouncer cannot run without database configuration")
 }
 
-func TestBuildClientsWithConflicts(t *testing.T) {
-	// Test that buildClients properly handles database routes
+func TestValidateDatabaseConfigurationsWithConflicts(t *testing.T) {
+	// Test that validateDatabaseConfigurations properly handles database routes
 	// Note: This test now passes because exact matches take precedence over patterns
 	logger := zap.NewNop()
 	config := &TOMLConfig{
@@ -413,7 +413,7 @@ func TestBuildClientsWithConflicts(t *testing.T) {
 		},
 	}
 
-	_, err := buildClients(config, logger)
+	err := validateDatabaseNames(config.Databases, logger)
 	assert.NoError(t, err) // Should pass because exact matches take precedence
 }
 
