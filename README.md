@@ -197,6 +197,7 @@ helm install mongobouncer ./deploy/helm/mongobouncer
 
 **Current Limitations:**
 - ❌ **Multi-Document Transactions**: MongoDB transactions (`startTransaction`, `commitTransaction`, `abortTransaction`) are not fully supported. For applications requiring transaction support, consider using direct MongoDB connections or implementing application-level transaction management
+- ⚠️ **Authentication Methods**: Currently only supports authentication via `appName` parameter in connection strings. Traditional MongoDB authentication methods (username/password in connection string, SASL, etc.) are not supported. Read more about the authentication system [here](./AUTHENTICATION.md).
 
 ### Authentication
 

@@ -2,52 +2,47 @@ name: CI
 
 on:
   push:
-  pull_request:
-  workflow_dispatch:
-
-permissions:
-  contents: read
-  pull-requests: read
-  checks: write
+    branches: ["ci", "dev", "main"]
 
 env:
-  GO_VERSION: "1.24"
+  REGISTRY: ghcr.io
+  IMAGE_NAME: ${{ github.repository }}
 
 jobs:
-  tests:
+  build-and-push-image:
     runs-on: ubuntu-latest
-    # running in a container enables us to use mongo{1,2,3} as a hostname
-    # in our tests, since we are all part of the same docker network.
-    # from the host, we would have to do port mappings
-    container:
-      # gh actions needs node, so use the node image
-      image: node
-    services:
-      mongo1:
-        image: mongo:5
-      mongo2:
-        image: mongo:5
-      mongo3:
-        image: mongo:5
-    steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-go@v5
-        with:
-          go-version: ${{ env.GO_VERSION }}
-      - run: go install gotest.tools/gotestsum@latest
-      - run: |
-          ~/go/bin/gotestsum --junitfile gotestsum-report.xml ./...
-      - uses: mikepenz/action-junit-report@v4
-        if: success() || failure()
-        with:
-          report_paths: "gotestsum-report.xml"
-          include_passed: true
+    permissions:
+      contents: read
+      packages: write
+      attestations: write
+      id-token: write
 
-  lint:
-    runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-go@v5
+      - name: Checkout repository
+        uses: actions/checkout@v5
+      - name: Log in to the Container registry
+        uses: docker/login-action@65b78e6e13532edd9afa3aa52ac7964289d1a9c1
         with:
-          go-version: ${{ env.GO_VERSION }}
-      - uses: golangci/golangci-lint-action@v6
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Extract metadata (tags, labels) for Docker
+        id: meta
+        uses: docker/metadata-action@9ec57ed1fcdbf14dcef7dfbe97b2010124a938b7
+        with:
+          images: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}
+          tags: |
+            type=ref,event=branch
+            type=sha
+            # set latest tag for main branch
+            type=raw,value=latest,enable=${{ github.ref == format('refs/heads/{0}', 'main') }}
+
+      - name: Build and push Docker image
+        id: push
+        uses: docker/build-push-action@f2a1d5e99d037542a71f64918e516c093c6f3fc4
+        with:
+          context: .
+          push: true
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
