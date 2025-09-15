@@ -27,8 +27,10 @@ server_selection_timeout = "5s"        # Server selection timeout
 connect_timeout = "5s"                 # Connection establishment timeout
 socket_timeout = "30s"                 # Socket operation timeout
 heartbeat_interval = "10s"             # Heartbeat frequency
+retry_writes = true                    # Enable retryable writes (default for replica sets)
 auth_enabled = true                    # Enable authentication on the proxy level
 regex_credential_passthrough = true    # Use credentials passed in appName as well as the passed authSource for regex matched/wildcard match databases in downstream connections
+topology = "sharded"                   # The topology of the upstream MongoDB cluster. Ex: sharded, single, loadBalanced
 ping = true
 
 # =====================================
@@ -57,6 +59,13 @@ unlink = false   # Remove unix socket file on exit
 #    - Clear separation of connection vs. pool settings
 #    - No connection_string field needed
 # 3. Environment variable substitution
+
+# Authentication Format:
+# appName=database:username:password
+# 
+# Example usage:
+# mongosh "mongodb://localhost:27017/admin?appName=admin:admin:admin123"
+# mongosh "mongodb://localhost:27017/app_db?appName=app_db:appuser:apppass"
 
 # Example 1: Production MongoDB Atlas cluster (connection string)
 production_app = { connection_string = "mongodb+srv://${PROD_USER}:${PROD_PASS}@production-cluster.mongodb.net/myapp?retryWrites=true&w=majority&maxPoolSize=100&minPoolSize=10" }

@@ -45,7 +45,7 @@ func isMasterDocument(kind description.TopologyKind) (bsoncore.Document, error) 
 			{Key: "maxWriteBatchSize", Value: 100000},                    // $numberInt
 			{Key: "localTime", Value: bson.D{{Key: "$date", Value: ms}}}, // $numberLong
 			{Key: "logicalSessionTimeoutMinutes", Value: 30},             // $numberInt
-			{Key: "maxWireVersion", Value: 8},                            // $numberInt
+			{Key: "maxWireVersion", Value: 25},                           // $numberInt
 			{Key: "minWireVersion", Value: 0},                            // $numberInt
 			{Key: "readOnly", Value: false},
 			{Key: "ok", Value: 1.0},
@@ -60,7 +60,7 @@ func isMasterDocument(kind description.TopologyKind) (bsoncore.Document, error) 
 			{Key: "localTime", Value: bson.D{{Key: "$date", Value: ms}}},
 			{Key: "logicalSessionTimeoutMinutes", Value: 30},
 			{Key: "minWireVersion", Value: 0},
-			{Key: "maxWireVersion", Value: 17},
+			{Key: "maxWireVersion", Value: 25},
 			{Key: "saslSupportedMechs", Value: bson.A{}},
 			// {Key: "saslSupportedMechs", Value: bson.A{
 			// 	"SCRAM-SHA-1",
@@ -79,7 +79,7 @@ func isMasterDocument(kind description.TopologyKind) (bsoncore.Document, error) 
 			{Key: "localTime", Value: bson.D{{Key: "$date", Value: ms}}},
 			{Key: "logicalSessionTimeoutMinutes", Value: 30},
 			{Key: "minWireVersion", Value: 0},
-			{Key: "maxWireVersion", Value: 17},
+			{Key: "maxWireVersion", Value: 25},
 			{Key: "ok", Value: 1.0},
 		}
 	default:

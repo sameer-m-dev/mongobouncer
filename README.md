@@ -209,7 +209,7 @@ Credentials are passed using the `appName` parameter in MongoDB connection strin
 
 ```bash
 # Secure connection with authentication
-mongosh "mongodb://localhost:27017/admin?appName=admin:admin123"
+mongosh "mongodb://localhost:27017/admin?appName=admin:admin:admin123" # The format is database_name:username:password
 
 # Will fail without appName when auth_enabled = true
 mongosh "mongodb://localhost:27017/admin"

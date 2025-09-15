@@ -35,5 +35,15 @@
         "${workspaceFolder}/examples/mongobouncer.docker-compose.toml",
       ],
     },
+    {
+      "name": "MongoBouncer NoAuth",
+      "type": "go",
+      "request": "launch",
+      "program": "${workspaceFolder}/mongobouncer.go",
+      "args": [
+        "--config",
+        "${workspaceFolder}/examples/mongobouncer.noauth.toml",
+      ],
+    },
   ]
 }

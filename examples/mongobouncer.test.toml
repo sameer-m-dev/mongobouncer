@@ -18,6 +18,8 @@ server_selection_timeout = "5s" # Server selection timeout
 connect_timeout = "5s"          # Connection establishment timeout
 socket_timeout = "30s"          # Socket operation timeout
 heartbeat_interval = "10s"      # Heartbeat frequency
+auth_enabled = false
+topology = "sharded"
 
 # Prometheus metrics (optional but recommended)
 metrics_address = "0.0.0.0:9090"
@@ -26,34 +28,34 @@ metrics_enabled = true
 # Database connections - Configure these for your MongoDB setup
 [databases]
 # Application databases - wildcard route for all databases
-"*" = { connection_string = "mongodb://localhost:27019" }
+"*" = { connection_string = "mongodb://appuser_rs6:apppass_rs6_123@host.docker.internal:27018/app_prod_rs6?replicaSet=rs0&authSource=admin" }
 # Specific database routes
-mongobouncer_test = { connection_string = "mongodb://localhost:27019/mongobouncer_test" }
+mongobouncer_test = { connection_string = "mongodb://localhost:27022/mongobouncer_test" }
 
 [databases.pool_test]
-connection_string = "mongodb://localhost:27018/pool_test"
+connection_string = "mongodb://localhost:27022/pool_test"
 max_pool_size = 10
 min_pool_size = 10
 socket_timeout = "60s"
 
 # Database-specific MongoDB client overrides (optional)
 [databases.high_traffic_db]
-connection_string = "mongodb://localhost:27019/high_traffic_db"
+connection_string = "mongodb://localhost:27022/high_traffic_db"
 max_pool_size = 50                                              # Override default for high-traffic database
 min_pool_size = 10                                              # Override default
 socket_timeout = "60s"                                          # Longer timeout for this DB
 
 [databases.analytics_db]
-connection_string = "mongodb://localhost:27019/analytics_db"
+connection_string = "mongodb://localhost:27022/analytics_db"
 max_pool_size = 5                                            # Smaller pool for analytics
 heartbeat_interval = "30s"                                   # Less frequent heartbeats
 
 [databases.exact_db]
 # Exact match database - will use route credentials (no passthrough)
-connection_string = "mongodb://admin:admin123@localhost:27021/exact_db?authSource=admin"
+connection_string = "mongodb://admin:admin123@localhost:27022/exact_db?authSource=admin"
 label = "exact_match_database"
 
 [databases."test_*"]
 # Wildcard pattern - will use client credentials for downstream connections
-connection_string = "mongodb://localhost:27020"
+connection_string = "mongodb://localhost:27022"
 label = "test_wildcard_pattern"

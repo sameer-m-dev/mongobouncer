@@ -5,10 +5,13 @@ import (
 	"regexp"
 	"strings"
 	"sync"
+	"time"
 
 	"go.uber.org/zap"
 
+	"github.com/sameer-m-dev/mongobouncer/lruttl"
 	"github.com/sameer-m-dev/mongobouncer/mongo"
+	"github.com/sameer-m-dev/mongobouncer/util"
 )
 
 // DatabaseRouter handles routing of database connections with wildcard support
@@ -18,6 +21,7 @@ type DatabaseRouter struct {
 	wildcardRoute *RouteConfig            // Wildcard (*) fallback route
 	patternRoutes []*PatternRoute         // Pattern-based routes (e.g., test_*, *_prod)
 	mutex         sync.RWMutex
+	routeCache    *lruttl.Cache // Cache for database route resolutions
 }
 
 // RouteConfig represents configuration for routing to a specific MongoDB instance
@@ -28,6 +32,7 @@ type RouteConfig struct {
 	PoolMode         string
 	MaxConnections   int
 	Label            string
+	DatabaseConfig   *util.MongoDBClientConfig
 }
 
 // PatternRoute represents a pattern-based route
@@ -50,10 +55,14 @@ const (
 
 // NewDatabaseRouter creates a new database router
 func NewDatabaseRouter(logger *zap.Logger) *DatabaseRouter {
+	// Create route cache with 5-minute TTL and max 1000 entries
+	routeCache := lruttl.New(1000, 5*time.Minute)
+
 	return &DatabaseRouter{
 		logger:        logger,
 		routes:        make(map[string]*RouteConfig),
 		patternRoutes: make([]*PatternRoute, 0),
+		routeCache:    routeCache,
 	}
 }
 
@@ -61,6 +70,9 @@ func NewDatabaseRouter(logger *zap.Logger) *DatabaseRouter {
 func (r *DatabaseRouter) AddRoute(pattern string, config *RouteConfig) error {
 	r.mutex.Lock()
 	defer r.mutex.Unlock()
+
+	// Clear cache when routes are modified
+	r.routeCache.Clear()
 
 	// Handle wildcard route
 	if pattern == "*" {
@@ -112,6 +124,9 @@ func (r *DatabaseRouter) RemoveRoute(pattern string) {
 	r.mutex.Lock()
 	defer r.mutex.Unlock()
 
+	// Clear cache when routes are modified
+	r.routeCache.Clear()
+
 	if pattern == "*" {
 		r.wildcardRoute = nil
 		return
@@ -131,37 +146,58 @@ func (r *DatabaseRouter) RemoveRoute(pattern string) {
 
 // GetRoute returns the route configuration for a given database name
 func (r *DatabaseRouter) GetRoute(databaseName string) (*RouteConfig, error) {
-	r.mutex.RLock()
-	defer r.mutex.RUnlock()
-
-	// 1. Try exact match first
-	if route, ok := r.routes[databaseName]; ok {
-		r.logger.Debug("Found exact match route",
-			zap.String("database", databaseName),
-			zap.String("label", route.Label))
-		return route, nil
-	}
-
-	// 2. Try pattern matches
-	for _, pr := range r.patternRoutes {
-		if r.matchesPattern(databaseName, pr) {
-			r.logger.Debug("Found pattern match route",
+	// Check cache first
+	if cachedRoute, found := r.routeCache.Get(databaseName); found {
+		if route, ok := cachedRoute.(*RouteConfig); ok {
+			r.logger.Debug("Found cached route",
 				zap.String("database", databaseName),
-				zap.String("pattern", pr.Pattern),
-				zap.String("label", pr.RouteConfig.Label))
-			return pr.RouteConfig, nil
+				zap.String("label", route.Label))
+			return route, nil
 		}
 	}
 
-	// 3. Try wildcard route
-	if r.wildcardRoute != nil {
-		r.logger.Debug("Using wildcard route",
+	r.mutex.RLock()
+	defer r.mutex.RUnlock()
+
+	var route *RouteConfig
+	var err error
+
+	// 1. Try exact match first
+	if exactRoute, ok := r.routes[databaseName]; ok {
+		route = exactRoute
+		r.logger.Debug("Found exact match route",
 			zap.String("database", databaseName),
-			zap.String("label", r.wildcardRoute.Label))
-		return r.wildcardRoute, nil
+			zap.String("label", route.Label))
+	} else {
+		// 2. Try pattern matches
+		for _, pr := range r.patternRoutes {
+			if r.matchesPattern(databaseName, pr) {
+				route = pr.RouteConfig
+				r.logger.Debug("Found pattern match route",
+					zap.String("database", databaseName),
+					zap.String("pattern", pr.Pattern),
+					zap.String("label", pr.RouteConfig.Label))
+				break
+			}
+		}
+
+		// 3. Try wildcard route
+		if route == nil && r.wildcardRoute != nil {
+			route = r.wildcardRoute
+			r.logger.Debug("Using wildcard route",
+				zap.String("database", databaseName),
+				zap.String("label", r.wildcardRoute.Label))
+		}
 	}
 
-	return nil, fmt.Errorf("no route found for database: %s", databaseName)
+	if route == nil {
+		err = fmt.Errorf("no route found for database: %s", databaseName)
+		return nil, err
+	}
+
+	// Cache the result
+	r.routeCache.Add(databaseName, route)
+	return route, nil
 }
 
 // matchesPattern checks if a database name matches a pattern
@@ -243,9 +279,9 @@ func ExtractDatabaseName(msg *mongo.Message) (string, error) {
 
 	// If we have a collection name with database prefix
 	if collection != "" {
-		parts := strings.SplitN(collection, ".", 2)
-		if len(parts) > 0 && parts[0] != "" {
-			return parts[0], nil
+		collectionInfo := util.ParseCollectionName(collection)
+		if collectionInfo.Database != "" {
+			return collectionInfo.Database, nil
 		}
 	}
 
@@ -294,6 +330,7 @@ func (r *DatabaseRouter) Statistics() map[string]interface{} {
 		"exact_routes":   len(r.routes),
 		"pattern_routes": len(r.patternRoutes),
 		"has_wildcard":   r.wildcardRoute != nil,
+		"cache_size":     r.routeCache.Len(),
 	}
 
 	// Add route details

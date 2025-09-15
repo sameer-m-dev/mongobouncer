@@ -30,6 +30,7 @@ const (
 	ListDatabases     Command = "listDatabases"
 	MapReduce         Command = "mapReduce"
 	Update            Command = "update"
+	BuildInfo         Command = "buildInfo"
 )
 
 var collectionCommands = []Command{Aggregate, Count, CreateIndexes, Delete, Distinct, Drop, DropIndexes, Find, FindAndModify, Insert, ListIndexes, MapReduce, Update}
@@ -78,15 +79,16 @@ func CommandAndCollection(msg bsoncore.Document) (Command, string) {
 func IsIsMasterDoc(doc bsoncore.Document) bool {
 	isMaster := doc.Lookup(string(IsMaster))
 	ismaster := doc.Lookup(string(Ismaster))
-	return IsIsMasterValueTruthy(isMaster) || IsIsMasterValueTruthy(ismaster)
+	buildInfo := doc.Lookup(string(BuildInfo))
+	return IsIsMasterValueTruthy(isMaster) || IsIsMasterValueTruthy(ismaster) || IsIsMasterValueTruthy(buildInfo)
 }
 
 func IsIsMasterValueTruthy(val bsoncore.Value) bool {
 	if intValue, isInt := val.Int32OK(); intValue > 0 {
-		return true;
+		return true
 	} else if !isInt {
 		boolValue, isBool := val.BooleanOK()
 		return boolValue && isBool
 	}
-	return false;
+	return false
 }

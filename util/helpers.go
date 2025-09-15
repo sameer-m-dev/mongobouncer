@@ -3,12 +3,18 @@ package util
 import (
 	"crypto/rand"
 	"encoding/hex"
+	"fmt"
 	"strings"
+
+	"go.mongodb.org/mongo-driver/mongo/description"
 )
 
 func GenerateRandomString() string {
 	// Generate 16 random bytes (128 bits)
 	b := make([]byte, 16)
+
+	// Ensure buffer has the right size
+	b = b[:16]
 	_, err := rand.Read(b)
 	if err != nil {
 		panic(err)
@@ -27,4 +33,17 @@ func GenerateRandomString() string {
 	}
 
 	return strings.Join(parts, "_")
+}
+
+func GetTopology(topology string) (description.TopologyKind, error) {
+	switch strings.ToLower(topology) {
+	case "single":
+		return description.Single, nil
+	case "sharded":
+		return description.Sharded, nil
+	case "loadBalanced":
+		return description.LoadBalanced, nil
+	default:
+		return description.Single, fmt.Errorf("invalid topology: %s", topology)
+	}
 }

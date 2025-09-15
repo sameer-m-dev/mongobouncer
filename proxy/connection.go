@@ -20,7 +20,7 @@ import (
 
 type connection struct {
 	log     *zap.Logger
-	metrics *util.MetricsClient
+	metrics util.MetricsInterface
 
 	address string
 	conn    net.Conn
@@ -42,11 +42,14 @@ type connection struct {
 	authEnabled                bool   // Whether authentication is enabled
 	regexCredentialPassthrough bool   // Whether to use client credentials for wildcard/regex matches
 
+	// MongoDB client settings for dynamic client creation
+	mongodbDefaults util.MongoDBClientConfig // Default MongoDB client settings
+
 	// Database usage tracking
 	databaseUsed string // The actual database that was used during this connection
 }
 
-func handleConnection(log *zap.Logger, metrics *util.MetricsClient, address string, conn net.Conn, mongoLookup MongoLookup, poolManager *pool.Manager, kill chan interface{}, databaseRouter *DatabaseRouter, authEnabled bool, regexCredentialPassthrough bool) string {
+func handleConnection(log *zap.Logger, metrics util.MetricsInterface, address string, conn net.Conn, mongoLookup MongoLookup, poolManager *pool.Manager, kill chan interface{}, databaseRouter *DatabaseRouter, authEnabled bool, regexCredentialPassthrough bool, mongodbDefaults util.MongoDBClientConfig) string {
 	defer func() {
 		if r := recover(); r != nil {
 			log.Error("Connection crashed", zap.String("panic", fmt.Sprintf("%v", r)), zap.String("stack", string(debug.Stack())))
@@ -70,6 +73,7 @@ func handleConnection(log *zap.Logger, metrics *util.MetricsClient, address stri
 		clientID:                   clientID,
 		authEnabled:                authEnabled,
 		regexCredentialPassthrough: regexCredentialPassthrough,
+		mongodbDefaults:            mongodbDefaults,
 	}
 
 	// Extract target database from the client's connection string for smart admin routing
@@ -251,6 +255,7 @@ func (c *connection) readWireMessage() ([]byte, error) {
 
 	// read the length as an int32
 	size := (int32(sizeBuf[0])) | (int32(sizeBuf[1]) << 8) | (int32(sizeBuf[2]) << 16) | (int32(sizeBuf[3]) << 24)
+
 	if int(size) > cap(c.buffer) {
 		c.buffer = make([]byte, 0, size)
 	}
@@ -264,6 +269,11 @@ func (c *connection) readWireMessage() ([]byte, error) {
 	}
 
 	return buffer, nil
+
+	// Return a copy since we're putting the buffer back to the pool
+	// result := make([]byte, len(buffer))
+	// copy(result, buffer)
+	// return result, nil
 }
 
 func (c *connection) roundTrip(msg *mongo.Message, isMaster bool, tags []string) (*mongo.Message, error) {
@@ -272,59 +282,87 @@ func (c *connection) roundTrip(msg *mongo.Message, isMaster bool, tags []string)
 
 	// Handle isMaster commands with authentication and mocked response
 	if isMaster {
-		// Determine if this is an exact match or wildcard/regex match
-		route, err := c.databaseRouter.GetRoute(databaseName)
-		if err != nil {
-			c.log.Error("Failed to get route", zap.Error(err))
-			return nil, fmt.Errorf("routing failed: %v", err)
-		}
-		isExactMatch := route != nil && route.DatabaseName == databaseName
-
-		// Authentication logic:
-		// - For exact matches: ALWAYS require authentication
-		// - For wildcard/regex matches: Only validate if credentials are provided in appName
+		// For isMaster commands, authentication logic should be based on appName content
+		// not the extracted database name (which is always "admin" for isMaster)
+		topology := description.Sharded
 		if c.authEnabled && c.clientUsername == "" {
+			// Extract appName from the message
+			appName, err := c.extractAppNameFromMessage(msg)
+			if err != nil {
+				c.log.Debug("Failed to extract appName", zap.Error(err))
+				// If we can't extract appName, reject the connection
+				return nil, fmt.Errorf("authentication required: failed to extract appName")
+			}
+
+			if appName == "" {
+				c.log.Debug("No appName found in isMaster message")
+				return nil, fmt.Errorf("authentication required: appName parameter must be provided")
+			}
+
+			c.log.Debug("Extracted appName from isMaster", zap.String("app_name", appName))
+
+			// Parse appName to get database, username, password
+			appDatabase, username, password, err := c.parseAppNameCredentials(appName)
+			if err != nil {
+				c.log.Debug("AppName is not in credential format", zap.Error(err))
+				return nil, fmt.Errorf("invalid appName format: must be 'database:username:password', got: %s", appName)
+			}
+
+			if appDatabase == "" || username == "" || password == "" {
+				c.log.Debug("Empty credentials in appName", zap.String("app_name", appName))
+				return nil, fmt.Errorf("authentication required: username and password must be provided")
+			}
+
+			c.log.Debug("Parsed credentials from appName",
+				zap.String("app_database", appDatabase),
+				zap.String("username", username),
+				zap.Bool("has_password", password != ""))
+
+			// Determine if this is an exact match or wildcard/regex match based on appDatabase
+			route, err := c.databaseRouter.GetRoute(appDatabase)
+			if err != nil {
+				c.log.Error("Database route not found for appName database",
+					zap.String("app_database", appDatabase),
+					zap.Error(err))
+				return nil, fmt.Errorf("database %s is not supported: %v", appDatabase, err)
+			}
+
+			isExactMatch := route != nil && route.DatabaseName == appDatabase
+
+			// If topology is defined then use it, else use the default sharded topology
+			if route != nil {
+				if route.DatabaseConfig.Topology != nil {
+					topology = *route.DatabaseConfig.Topology
+				}
+			}
+
+			// Apply authentication based on route type
 			if isExactMatch {
-				// For exact matches, ALWAYS require authentication
-				c.log.Debug("Exact match detected, requiring authentication", zap.String("database", databaseName))
-				if err := c.validateCredentialsFromAppName(msg, databaseName); err != nil {
-					c.log.Error("AppName credential validation failed for exact match", zap.Error(err))
+				// For exact matches, validate credentials against route configuration
+				c.log.Debug("Exact match detected, validating credentials",
+					zap.String("app_database", appDatabase),
+					zap.String("username", username))
+
+				if err := c.validateCredentialsAgainstDatabase(username, password, appDatabase, appDatabase); err != nil {
+					c.log.Error("Credential validation failed for exact match", zap.Error(err))
 					return nil, fmt.Errorf("authentication failed: %v", err)
 				}
 			} else {
-				// For wildcard/regex matches, only validate if appName credentials are provided
-				appName, err := c.extractAppNameFromMessage(msg)
-				if err != nil {
-					c.log.Debug("Failed to extract appName", zap.Error(err))
-					// If we can't extract appName, that's okay for wildcard matches
-				} else if appName != "" {
-					// Check if appName is in credential format (username:password)
-					username, password, parseErr := c.parseAppNameCredentials(appName)
-					if parseErr != nil {
-						c.log.Debug("AppName is not in credential format, skipping authentication",
-							zap.String("app_name", appName),
-							zap.Error(parseErr))
-						// This is okay for wildcard matches - we don't require credentials
-					} else if username != "" && password != "" {
-						// Only validate credentials if appName is in proper credential format
-						c.log.Debug("Wildcard/regex match with appName credentials, validating", zap.String("database", databaseName))
-						if err := c.validateCredentialsFromAppName(msg, databaseName); err != nil {
-							c.log.Error("AppName credential validation failed for wildcard match", zap.Error(err))
-							return nil, fmt.Errorf("authentication failed: %v", err)
-						}
-					} else {
-						c.log.Debug("Wildcard/regex match with empty credentials, skipping authentication", zap.String("database", databaseName))
-					}
-				} else {
-					c.log.Debug("Wildcard/regex match without appName credentials, skipping authentication", zap.String("database", databaseName))
-				}
+				// For wildcard/regex matches, use credential passthrough
+				c.log.Debug("Wildcard/regex match detected, using credential passthrough",
+					zap.String("app_database", appDatabase),
+					zap.String("username", username))
+
+				// Store credentials for downstream connection
+				c.clientUsername = username
+				c.clientPassword = password
 			}
 		}
 
 		requestID := msg.Op.RequestID()
-		c.log.Debug("Mocking isMaster response", zap.Int32("request_id", requestID))
+		c.log.Debug("Mocking isMaster response", zap.Int32("request_id", requestID), zap.String("topology", topology.String()))
 		// Always respond as a shard router (mongos) to emulate the behavior you described
-		return mongo.IsMasterResponse(requestID, description.Sharded)
+		return mongo.IsMasterResponse(requestID, topology)
 	}
 
 	// For non-isMaster operations, authentication should already be validated
@@ -503,178 +541,6 @@ func (c *connection) extractTargetDatabaseFromConnectionString() {
 		zap.String("client_id", c.clientID))
 }
 
-// extractTargetDatabaseFromFirstMessage reads the first wire message and extracts the target database
-// This allows us to determine the admin route immediately without buffering operations
-func (c *connection) extractTargetDatabaseFromFirstMessage() {
-	c.log.Debug("Connection established, reading first message to determine target database",
-		zap.String("client_id", c.clientID))
-
-	// Read the first wire message
-	firstMsgBytes, err := c.readWireMessage()
-	if err != nil {
-		c.log.Error("Failed to read first wire message", zap.Error(err))
-		return
-	}
-
-	// Decode the first message
-	firstMsgOp, err := mongo.Decode(firstMsgBytes)
-	if err != nil {
-		c.log.Error("Failed to decode first wire message", zap.Error(err))
-		return
-	}
-
-	// Try to extract the target database from the MongoDB handshake
-	// For MongoDB clients, the target database is often specified in the connection string
-	// We need to parse this from the initial handshake message
-	targetDatabase := c.extractTargetDatabaseFromHandshake(firstMsgOp)
-
-	if targetDatabase != "" {
-		c.intendedDatabase = targetDatabase
-		c.log.Debug("Determined target database from handshake",
-			zap.String("intended_database", c.intendedDatabase),
-			zap.String("client_id", c.clientID))
-	} else {
-		c.log.Debug("Could not determine target database from handshake, will wait for operation",
-			zap.String("client_id", c.clientID))
-	}
-
-	// Process the first message immediately
-	err = c.handleMessageWithBytes(firstMsgBytes, firstMsgOp)
-	if err != nil {
-		c.log.Error("Error handling first message", zap.Error(err))
-		return
-	}
-
-	// Continue processing subsequent messages
-	c.processMessages()
-}
-
-// extractTargetDatabaseFromHandshake extracts the target database from MongoDB handshake messages
-func (c *connection) extractTargetDatabaseFromHandshake(op mongo.Operation) string {
-	// For MongoDB handshake operations (like isMaster, hello), we need to look for
-	// the target database in the BSON payload of the message
-
-	// Check if this is a handshake operation
-	if !op.IsIsMaster() {
-		return ""
-	}
-
-	// Log detailed information about the handshake operation to understand what we're receiving
-	command, collection := op.CommandAndCollection()
-	c.log.Debug("Handshake operation detected - analyzing for target database",
-		zap.String("operation_type", fmt.Sprintf("%T", op)),
-		zap.String("operation_string", op.String()),
-		zap.String("database_name", op.DatabaseName()),
-		zap.String("command", string(command)),
-		zap.String("collection", collection),
-		zap.String("request_id", fmt.Sprintf("%d", op.RequestID())))
-
-	// Try to extract target database from the operation's BSON payload
-	// For MongoDB handshake operations, the target database information might be
-	// embedded in the BSON document that was sent
-	targetDatabase := c.extractTargetDatabaseFromBSON(op)
-	if targetDatabase != "" {
-		c.log.Debug("Found target database in handshake BSON",
-			zap.String("target_database", targetDatabase))
-		return targetDatabase
-	}
-
-	// If we can't determine the target database from the handshake, return empty
-	c.log.Debug("Could not extract target database from handshake operation")
-	return ""
-}
-
-// extractTargetDatabaseFromBSON attempts to extract target database from BSON payload
-func (c *connection) extractTargetDatabaseFromBSON(op mongo.Operation) string {
-	// For MongoDB operations, we need to access the raw BSON data
-	// The target database information might be in the connection metadata
-
-	// Try to get the database name from the operation itself first
-	databaseName := op.DatabaseName()
-	if databaseName != "" && databaseName != "admin" {
-		c.log.Debug("Found target database in operation database name",
-			zap.String("database", databaseName))
-		return databaseName
-	}
-
-	// For handshake operations, we'll analyze the operation string
-	// to look for patterns that might indicate the target database
-	operationString := op.String()
-	c.log.Debug("Analyzing operation string for target database",
-		zap.String("operation_string", operationString))
-
-	// Look for patterns in the operation string that might indicate the target database
-	// This is a heuristic approach - we'll look for database names in the string
-	// that are not "admin"
-
-	// For now, we'll return empty and let the normal flow handle it
-	// The detailed logging will help us understand what information is available
-	return ""
-}
-
-// handleMessageWithBytes handles a message with pre-decoded bytes and operation
-func (c *connection) handleMessageWithBytes(wm []byte, op mongo.Operation) (err error) {
-	var tags []string
-
-	defer func(start time.Time) {
-		if c.metrics != nil {
-			tags := append(tags, fmt.Sprintf("success:%v", err == nil))
-			_ = c.metrics.Timing("handle_message", time.Since(start), tags, 1)
-		}
-	}(time.Now())
-
-	isMaster := op.IsIsMaster()
-	command, collection := op.CommandAndCollection()
-	unacknowledged := op.Unacknowledged()
-	tags = append(
-		tags,
-		fmt.Sprintf("request_op_code:%v", op.OpCode()),
-		fmt.Sprintf("is_master:%v", isMaster),
-		fmt.Sprintf("command:%s", string(command)),
-		fmt.Sprintf("collection:%s", collection),
-		fmt.Sprintf("unacknowledged:%v", unacknowledged),
-	)
-
-	// Record request metrics
-	if c.metrics != nil {
-		// Extract database name from the operation
-		databaseName := c.extractDatabaseName(op)
-
-		// Record request count
-		requestTags := append(tags, fmt.Sprintf("database:%s", databaseName))
-		_ = c.metrics.Incr("request", requestTags, 1)
-
-		// Record request size
-		requestSize := len(wm)
-		_ = c.metrics.Distribution("request_size", float64(requestSize), requestTags, 1)
-	}
-
-	c.log.Debug("Request",
-		zap.String("op_code", fmt.Sprintf("%v", op.OpCode())),
-		zap.Bool("is_master", isMaster),
-		zap.String("command", string(command)),
-		zap.String("collection", collection),
-		zap.Int("request_size", len(wm)))
-
-	// Perform round trip
-	res, err := c.roundTrip(&mongo.Message{Wm: wm, Op: op}, false, tags)
-	if err != nil {
-		return err
-	}
-
-	// Record response metrics
-	if c.metrics != nil {
-		responseSize := len(res.Wm)
-		responseSizeTags := append(tags, fmt.Sprintf("response_op_code:%v", res.Op.OpCode()))
-		_ = c.metrics.Distribution("response_size", float64(responseSize), responseSizeTags, 1)
-	}
-
-	if _, err = c.conn.Write(res.Wm); err != nil {
-		return
-	}
-	return
-}
-
 // extractDatabaseName extracts the database name from a MongoDB operation
 func (c *connection) extractDatabaseName(op mongo.Operation) string {
 	// Try to extract from collection name first (most reliable)
@@ -688,10 +554,10 @@ func (c *connection) extractDatabaseName(op mongo.Operation) string {
 	var databaseName string
 
 	if collection != "" {
-		// Collection names are in format "database.collection"
-		parts := strings.SplitN(collection, ".", 2)
-		if len(parts) >= 2 {
-			databaseName = parts[0]
+		// Extract database name using utility function
+		collectionInfo := util.ParseCollectionName(collection)
+		if collectionInfo.Database != "" {
+			databaseName = collectionInfo.Database
 			c.log.Debug("Extracted database name from collection",
 				zap.String("collection", collection),
 				zap.String("database", databaseName))
@@ -721,33 +587,6 @@ func (c *connection) extractDatabaseName(op mongo.Operation) string {
 	}
 
 	return databaseName
-}
-
-// determineTargetDatabase determines which database this operation should be routed to
-func (c *connection) determineTargetDatabase(currentDatabase string, op mongo.Operation) string {
-	// If we already have a cached route config, check if it matches the current operation
-	if c.routeConfig != nil {
-		// If the current operation is for a different database than what we have cached,
-		// we need to handle this properly
-		if currentDatabase != c.intendedDatabase {
-			// This is an operation for a different database
-			// We should route to the actual database, not use the cached route
-			c.log.Debug("Operation for different database than cached",
-				zap.String("current_db", currentDatabase),
-				zap.String("cached_intended_db", c.intendedDatabase))
-			return currentDatabase
-		}
-		// For operations matching our cached database, use cached route
-		return c.intendedDatabase
-	}
-
-	// Use the current database as the intended database
-	c.intendedDatabase = currentDatabase
-
-	c.log.Debug("Set intended database from operation",
-		zap.String("intended_database", currentDatabase),
-		zap.String("current_operation_db", currentDatabase))
-	return currentDatabase
 }
 
 // extractHostFromRoute extracts host and port from a route configuration
@@ -864,59 +703,6 @@ func (c *connection) extractCredentialsFromConnectionString(connStr string) (use
 	return username, password, nil
 }
 
-// validateCredentialsFromAppName extracts and validates credentials from appName parameter in isMaster calls
-func (c *connection) validateCredentialsFromAppName(msg *mongo.Message, targetDatabase string) error {
-	c.log.Debug("Validating credentials from appName", zap.String("target_database", targetDatabase), zap.Bool("auth_enabled", c.authEnabled))
-
-	// If authentication is disabled, skip validation
-	if !c.authEnabled {
-		c.log.Debug("Authentication is disabled, skipping credential validation")
-		return nil
-	}
-
-	// Extract appName from the message
-	appName, err := c.extractAppNameFromMessage(msg)
-	if err != nil {
-		return fmt.Errorf("failed to extract appName: %v", err)
-	}
-
-	if appName == "" {
-		c.log.Debug("No appName found in message")
-		// For exact matches, this is an error. For wildcard matches, this is okay.
-		// The calling code should handle this distinction.
-		return fmt.Errorf("authentication required: appName parameter must be provided")
-	}
-
-	c.log.Debug("Extracted appName", zap.String("app_name", appName))
-
-	// Parse appName to extract username and password (format: username:password)
-	username, password, err := c.parseAppNameCredentials(appName)
-	if err != nil {
-		c.log.Debug("AppName is not in credential format", zap.Error(err))
-		return fmt.Errorf("invalid appName format: must be 'username:password', got: %s", appName)
-	}
-
-	c.log.Debug("Parsed credentials from appName",
-		zap.String("username", username),
-		zap.Bool("has_password", password != ""))
-
-	// Validate credentials against database configuration
-	if err := c.validateCredentialsAgainstDatabase(username, password, targetDatabase); err != nil {
-		c.log.Error("Credential validation failed", zap.Error(err))
-		return fmt.Errorf("credential validation failed: %v", err)
-	}
-
-	// Store validated credentials for this connection
-	c.clientUsername = username
-	c.clientPassword = password
-
-	c.log.Debug("Credentials validated successfully from appName",
-		zap.String("username", username),
-		zap.String("target_database", targetDatabase))
-
-	return nil
-}
-
 // extractAppNameFromMessage extracts appName from isMaster call
 func (c *connection) extractAppNameFromMessage(msg *mongo.Message) (string, error) {
 	opStr := msg.Op.String()
@@ -941,26 +727,43 @@ func (c *connection) extractAppNameFromMessage(msg *mongo.Message) (string, erro
 	return "", nil
 }
 
-// parseAppNameCredentials parses appName string to extract username and password
-func (c *connection) parseAppNameCredentials(appName string) (username, password string, err error) {
-	// Expected format: username:password
-	parts := strings.Split(appName, ":")
-	if len(parts) != 2 {
-		return "", "", fmt.Errorf("appName must be in format 'username:password', got: %s", appName)
+// parseAppNameCredentials parses appName string to extract database, username and password
+// Supports both old format (username:password) and new format (database:username:password)
+func (c *connection) parseAppNameCredentials(appName string) (database, username, password string, err error) {
+	// Use utility function for parsing
+	appInfo := util.ParseAppName(appName)
+
+	// Handle new format: database:username:password
+	if appInfo.Database != "" && appInfo.Username != "" && appInfo.Password != "" {
+		database = strings.TrimSpace(appInfo.Database)
+		username = strings.TrimSpace(appInfo.Username)
+		password = strings.TrimSpace(appInfo.Password)
+
+		if database == "" || username == "" || password == "" {
+			return "", "", "", fmt.Errorf("database, username and password cannot be empty")
+		}
+
+		return database, username, password, nil
 	}
 
-	username = strings.TrimSpace(parts[0])
-	password = strings.TrimSpace(parts[1])
+	// Handle old format: username:password (for backward compatibility)
+	if appInfo.Username != "" && appInfo.Password != "" {
+		username = strings.TrimSpace(appInfo.Username)
+		password = strings.TrimSpace(appInfo.Password)
 
-	if username == "" || password == "" {
-		return "", "", fmt.Errorf("username and password cannot be empty")
+		if username == "" || password == "" {
+			return "", "", "", fmt.Errorf("username and password cannot be empty")
+		}
+
+		// For old format, database is empty (will be determined from connection)
+		return "", username, password, nil
 	}
 
-	return username, password, nil
+	return "", "", "", fmt.Errorf("appName must be in format 'database:username:password' or 'username:password', got: %s", appName)
 }
 
 // validateCredentialsAgainstDatabase validates credentials against database configuration
-func (c *connection) validateCredentialsAgainstDatabase(username, password, targetDatabase string) error {
+func (c *connection) validateCredentialsAgainstDatabase(username, password, targetDatabase, appDatabase string) error {
 	// Get the route configuration for the target database
 	route, err := c.databaseRouter.GetRoute(targetDatabase)
 	if err != nil {
@@ -997,9 +800,19 @@ func (c *connection) validateCredentialsAgainstDatabase(username, password, targ
 		return fmt.Errorf("authentication failed: invalid credentials")
 	}
 
+	// If appDatabase is provided (new format), validate that it matches the target database
+	if appDatabase != "" && appDatabase != targetDatabase {
+		c.log.Error("AppName database does not match target database",
+			zap.String("app_database", appDatabase),
+			zap.String("target_database", targetDatabase),
+			zap.String("username", username))
+		return fmt.Errorf("authentication failed: database mismatch - appName specifies '%s' but connecting to '%s'", appDatabase, targetDatabase)
+	}
+
 	c.log.Debug("Credentials match database configuration",
 		zap.String("username", username),
-		zap.String("target_database", targetDatabase))
+		zap.String("target_database", targetDatabase),
+		zap.String("app_database", appDatabase))
 
 	// Store validated credentials for this connection
 	c.clientUsername = username
@@ -1104,6 +917,9 @@ func (c *connection) createMongoClientWithCredentials(route *RouteConfig, userna
 	// Create MongoDB client options
 	opts := options.Client().ApplyURI(newConnectionString)
 
+	// Apply MongoDB client settings using the shared utility function
+	opts = util.ApplyMongoDBClientSettings(opts, c.intendedDatabase, c.mongodbDefaults, route.DatabaseConfig, c.log)
+
 	// Create the MongoDB client
 	mongoClient, err := mongo.Connect(c.log, c.metrics, opts, false) // Don't ping for dynamic clients
 	if err != nil {
@@ -1115,17 +931,12 @@ func (c *connection) createMongoClientWithCredentials(route *RouteConfig, userna
 
 // sanitizeConnectionString removes sensitive information from connection string for logging
 func sanitizeConnectionString(connStr string) string {
-	// Replace password in URI with ***
-	if strings.Contains(connStr, "@") {
-		parts := strings.Split(connStr, "@")
-		if len(parts) == 2 && strings.Contains(parts[0], "://") {
-			userInfo := strings.Split(parts[0], "://")[1]
-			if strings.Contains(userInfo, ":") {
-				userParts := strings.Split(userInfo, ":")
-				sanitized := userParts[0] + ":***"
-				return strings.Replace(connStr, userInfo, sanitized, 1)
-			}
-		}
+	// Use utility function for parsing
+	connInfo := util.ParseConnectionString(connStr)
+	if connInfo.Username != "" && connInfo.Password != "" {
+		// Replace password with ***
+		sanitized := connInfo.Username + ":***"
+		return strings.Replace(connStr, connInfo.Username+":"+connInfo.Password, sanitized, 1)
 	}
 	return connStr
 }

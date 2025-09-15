@@ -111,8 +111,8 @@ label = "test_label"
 		// Test main config
 		mainConfig := config.GetMainConfig()
 		assert.Equal(t, 27020, mainConfig.ListenPort)
-		assert.Equal(t, 0, mainConfig.MongoDBMinPoolSize) // These fields are not parsed from the config
-		assert.Equal(t, 0, mainConfig.MongoDBMaxPoolSize) // These fields are not parsed from the config
+		assert.Equal(t, 10, mainConfig.MongoDBConfig.MinPoolSize)
+		assert.Equal(t, 50, mainConfig.MongoDBConfig.MaxPoolSize)
 		assert.Equal(t, 200, mainConfig.MaxClientConn)
 
 		// Test structured database
@@ -126,7 +126,6 @@ label = "test_label"
 		assert.Equal(t, "testdb", db.DBName)
 		assert.Equal(t, "testuser", db.User)
 		assert.Equal(t, "testpass", db.Password)
-		assert.Equal(t, 15, db.MaxPoolSize)
 		assert.Equal(t, "test_label", db.Label)
 	})
 }
@@ -263,7 +262,7 @@ func TestValidateDatabaseNames(t *testing.T) {
 		assert.NoError(t, err) // This will pass because Go maps can't have duplicates
 	})
 
-	t.Run("ExactMatchConflictsWithPattern", func(t *testing.T) {
+	t.Run("ExactMatchWithPatternNoConflict", func(t *testing.T) {
 		databases := map[string]interface{}{
 			"app_prod": map[string]interface{}{
 				"connection_string": "mongodb://localhost:27017/app_prod",
@@ -273,13 +272,10 @@ func TestValidateDatabaseNames(t *testing.T) {
 			},
 		}
 		err := validateDatabaseNames(databases, logger)
-		assert.Error(t, err)
-		assert.Contains(t, err.Error(), "conflicting database routes detected")
-		assert.Contains(t, err.Error(), "app_prod")
-		assert.Contains(t, err.Error(), "app_*")
+		assert.NoError(t, err) // Should pass because exact matches take precedence
 	})
 
-	t.Run("PatternConflictsWithExactMatch", func(t *testing.T) {
+	t.Run("PatternWithExactMatchNoConflict", func(t *testing.T) {
 		databases := map[string]interface{}{
 			"app_*": map[string]interface{}{
 				"connection_string": "mongodb://localhost:27017",
@@ -289,10 +285,7 @@ func TestValidateDatabaseNames(t *testing.T) {
 			},
 		}
 		err := validateDatabaseNames(databases, logger)
-		assert.Error(t, err)
-		assert.Contains(t, err.Error(), "conflicting database routes detected")
-		assert.Contains(t, err.Error(), "app_prod")
-		assert.Contains(t, err.Error(), "app_*")
+		assert.NoError(t, err) // Should pass because exact matches take precedence
 	})
 
 	t.Run("ConflictingPatterns", func(t *testing.T) {
@@ -402,6 +395,8 @@ func TestBuildClientsNoDatabases(t *testing.T) {
 }
 
 func TestBuildClientsWithConflicts(t *testing.T) {
+	// Test that buildClients properly handles database routes
+	// Note: This test now passes because exact matches take precedence over patterns
 	logger := zap.NewNop()
 	config := &TOMLConfig{
 		Mongobouncer: MongobouncerConfig{
@@ -419,8 +414,7 @@ func TestBuildClientsWithConflicts(t *testing.T) {
 	}
 
 	_, err := buildClients(config, logger)
-	assert.Error(t, err)
-	assert.Contains(t, err.Error(), "conflicting database routes detected")
+	assert.NoError(t, err) // Should pass because exact matches take precedence
 }
 
 func TestWildcardRouteLabel(t *testing.T) {

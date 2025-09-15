@@ -12,13 +12,8 @@ import (
 	"go.uber.org/zap"
 	"go.uber.org/zap/zapcore"
 
-	"github.com/sameer-m-dev/mongobouncer/mongo"
-	"github.com/sameer-m-dev/mongobouncer/pool"
-	"github.com/sameer-m-dev/mongobouncer/proxy"
 	"github.com/sameer-m-dev/mongobouncer/util"
 )
-
-const defaultMetricsAddress = "localhost:9090"
 
 // TOMLConfig represents the complete configuration structure
 type TOMLConfig struct {
@@ -43,20 +38,8 @@ type Database struct {
 	MaxDBConnections int    `toml:"max_db_connections"`
 	Label            string `toml:"label"`
 
-	// MongoDB client pool overrides (optional)
-	MongoDBMaxPoolSize            int           `toml:"max_pool_size"`
-	MongoDBMinPoolSize            int           `toml:"min_pool_size"`
-	MongoDBMaxConnIdleTime        time.Duration `toml:"max_conn_idle_time"`
-	MongoDBServerSelectionTimeout time.Duration `toml:"server_selection_timeout"`
-	MongoDBConnectTimeout         time.Duration `toml:"connect_timeout"`
-	MongoDBSocketTimeout          time.Duration `toml:"socket_timeout"`
-	MongoDBHeartbeatInterval      time.Duration `toml:"heartbeat_interval"`
-
-	// Legacy connection options (for backward compatibility)
-	MaxPoolSize              int `toml:"maxPoolSize"`
-	MinPoolSize              int `toml:"minPoolSize"`
-	MaxIdleTimeMS            int `toml:"maxIdleTimeMS"`
-	ServerSelectionTimeoutMS int `toml:"serverSelectionTimeoutMS"`
+	// MongoDB client pool overrides (optional) - using shared config
+	MongoDBConfig util.MongoDBClientConfig `toml:",inline"`
 }
 type MongobouncerConfig struct {
 	// Core server settings
@@ -65,11 +48,11 @@ type MongobouncerConfig struct {
 	LogLevel   string `toml:"log_level"`
 	LogFile    string `toml:"logfile"`
 
-	// Connection pooling (implemented)
+	// Connection pooling
 	PoolMode      string `toml:"pool_mode"`
 	MaxClientConn int    `toml:"max_client_conn"`
 
-	// Metrics (implemented)
+	// Metrics
 	MetricsAddress string `toml:"metrics_address"`
 	MetricsEnabled bool   `toml:"metrics_enabled"`
 
@@ -79,26 +62,20 @@ type MongobouncerConfig struct {
 	// Wildcard/Regex credential passthrough settings
 	RegexCredentialPassthrough bool `toml:"regex_credential_passthrough"`
 
-	// Network settings (implemented)
+	// Network settings
 	Network string `toml:"network"`
 	Unlink  bool   `toml:"unlink"`
 
-	// MongoDB client pool settings (implemented)
-	MongoDBMaxPoolSize            int           `toml:"max_pool_size"`
-	MongoDBMinPoolSize            int           `toml:"min_pool_size"`
-	MongoDBMaxConnIdleTime        time.Duration `toml:"max_conn_idle_time"`
-	MongoDBServerSelectionTimeout time.Duration `toml:"server_selection_timeout"`
-	MongoDBConnectTimeout         time.Duration `toml:"connect_timeout"`
-	MongoDBSocketTimeout          time.Duration `toml:"socket_timeout"`
-	MongoDBHeartbeatInterval      time.Duration `toml:"heartbeat_interval"`
-	Ping                          bool          `toml:"ping"`
+	// MongoDB client pool settings - using shared config
+	MongoDBConfig util.MongoDBClientConfig `toml:",inline"`
+	Ping          bool                     `toml:"ping"`
 }
 
 // Config represents the runtime configuration
 type Config struct {
 	tomlConfig *TOMLConfig
 	logger     *zap.Logger
-	metrics    *util.MetricsClient
+	metrics    util.MetricsInterface
 	clients    []client
 	network    string
 	unlink     bool
@@ -159,12 +136,21 @@ func LoadConfig(configPath string, verbose bool) (*Config, error) {
 	}
 
 	// Create Metrics client
-	var metricsClient *util.MetricsClient
+	var metricsClient util.MetricsInterface
 	if config.Mongobouncer.MetricsEnabled {
-		metricsClient, err = util.NewMetricsClient(logger, config.Mongobouncer.MetricsAddress)
+		baseMetricsClient, err := util.NewMetricsClient(logger, config.Mongobouncer.MetricsAddress)
 		if err != nil {
 			logger.Warn("Failed to create metrics client", zap.Error(err))
 			// Continue without metrics
+		} else {
+			// Wrap with batched metrics client for better performance
+			batchedMetricsClient := util.NewBatchedMetricsClient(
+				baseMetricsClient,
+				logger,
+				100,                  // batch size
+				100*time.Millisecond, // flush interval
+			)
+			metricsClient = batchedMetricsClient
 		}
 	}
 
@@ -227,6 +213,49 @@ func parseRawConfig(rawConfig map[string]interface{}, config *TOMLConfig) error 
 		}
 		if regexCredentialPassthrough, ok := mb["regex_credential_passthrough"].(bool); ok {
 			config.Mongobouncer.RegexCredentialPassthrough = regexCredentialPassthrough
+		}
+
+		// Parse MongoDB client config fields
+		if maxPoolSize, ok := mb["max_pool_size"].(int64); ok {
+			config.Mongobouncer.MongoDBConfig.MaxPoolSize = int(maxPoolSize)
+		}
+		if minPoolSize, ok := mb["min_pool_size"].(int64); ok {
+			config.Mongobouncer.MongoDBConfig.MinPoolSize = int(minPoolSize)
+		}
+		if maxConnIdleTime, ok := mb["max_conn_idle_time"].(string); ok {
+			if duration, err := time.ParseDuration(maxConnIdleTime); err == nil {
+				config.Mongobouncer.MongoDBConfig.MaxConnIdleTime = duration
+			}
+		}
+		if serverSelectionTimeout, ok := mb["server_selection_timeout"].(string); ok {
+			if duration, err := time.ParseDuration(serverSelectionTimeout); err == nil {
+				config.Mongobouncer.MongoDBConfig.ServerSelectionTimeout = duration
+			}
+		}
+		if connectTimeout, ok := mb["connect_timeout"].(string); ok {
+			if duration, err := time.ParseDuration(connectTimeout); err == nil {
+				config.Mongobouncer.MongoDBConfig.ConnectTimeout = duration
+			}
+		}
+		if socketTimeout, ok := mb["socket_timeout"].(string); ok {
+			if duration, err := time.ParseDuration(socketTimeout); err == nil {
+				config.Mongobouncer.MongoDBConfig.SocketTimeout = duration
+			}
+		}
+		if heartbeatInterval, ok := mb["heartbeat_interval"].(string); ok {
+			if duration, err := time.ParseDuration(heartbeatInterval); err == nil {
+				config.Mongobouncer.MongoDBConfig.HeartbeatInterval = duration
+			}
+		}
+		if retryWrites, ok := mb["retry_writes"].(bool); ok {
+			config.Mongobouncer.MongoDBConfig.RetryWrites = &retryWrites
+		}
+		if topology, ok := mb["topology"].(string); ok {
+			topology, err := util.GetTopology(topology)
+			if err != nil {
+				return err
+			}
+			config.Mongobouncer.MongoDBConfig.Topology = &topology
 		}
 	}
 
@@ -308,13 +337,8 @@ func validateDatabaseNames(databases map[string]interface{}, logger *zap.Logger)
 
 		// Check for pattern-based conflicts
 		if strings.Contains(dbName, "*") {
-			// Check for conflicts with exact matches
-			for exactName, exactConnStr := range exactMatches {
-				if matchesPattern(exactName, dbName) {
-					return fmt.Errorf("conflicting database routes detected: pattern '%s' matches exact database '%s' but points to different connections (%s vs %s)",
-						dbName, exactName, sanitizeURI(connectionString), sanitizeURI(exactConnStr))
-				}
-			}
+			// Note: We don't check for conflicts with exact matches because exact matches
+			// always take precedence over pattern matches in the router
 
 			// Check for conflicts with other patterns
 			for pattern, patternConnStr := range prefixPatterns {
@@ -347,25 +371,8 @@ func validateDatabaseNames(databases map[string]interface{}, logger *zap.Logger)
 				containsPatterns[dbName] = connectionString
 			}
 		} else {
-			// Exact match - check for conflicts with patterns
-			for pattern, patternConnStr := range prefixPatterns {
-				if matchesPattern(dbName, pattern) {
-					return fmt.Errorf("conflicting database routes detected: exact database '%s' matches pattern '%s' but points to different connections (%s vs %s)",
-						dbName, pattern, sanitizeURI(connectionString), sanitizeURI(patternConnStr))
-				}
-			}
-			for pattern, patternConnStr := range suffixPatterns {
-				if matchesPattern(dbName, pattern) {
-					return fmt.Errorf("conflicting database routes detected: exact database '%s' matches pattern '%s' but points to different connections (%s vs %s)",
-						dbName, pattern, sanitizeURI(connectionString), sanitizeURI(patternConnStr))
-				}
-			}
-			for pattern, patternConnStr := range containsPatterns {
-				if matchesPattern(dbName, pattern) {
-					return fmt.Errorf("conflicting database routes detected: exact database '%s' matches pattern '%s' but points to different connections (%s vs %s)",
-						dbName, pattern, sanitizeURI(connectionString), sanitizeURI(patternConnStr))
-				}
-			}
+			// Exact match - no need to check for conflicts with patterns because exact matches
+			// always take precedence over pattern matches in the router
 
 			// Check for duplicate exact matches
 			if existing, exists := exactMatches[dbName]; exists {
@@ -557,7 +564,7 @@ func buildClients(config *TOMLConfig, logger *zap.Logger) ([]client, error) {
 
 	// Create temporary config instance to apply MongoDB client settings
 	tempConfig := &Config{tomlConfig: config, logger: logger}
-	opts = tempConfig.applyMongoDBClientSettings(opts, "default", nil)
+	opts = tempConfig.ApplyMongoDBClientSettings(opts, "default", nil)
 
 	clients = append(clients, client{
 		address: address,
@@ -600,107 +607,19 @@ func createLogger(level, logFile string) (*zap.Logger, error) {
 	return config.Build()
 }
 
-// applyMongoDBClientSettings applies MongoDB client pool settings from config
-func (c *Config) applyMongoDBClientSettings(opts *options.ClientOptions, dbName string, dbConfig *Database) *options.ClientOptions {
+// ApplyMongoDBClientSettings applies MongoDB client pool settings from config
+func (c *Config) ApplyMongoDBClientSettings(opts *options.ClientOptions, dbName string, dbConfig *Database) *options.ClientOptions {
 	// Get defaults from mongobouncer config
-	defaults := c.tomlConfig.Mongobouncer
+	defaults := c.tomlConfig.Mongobouncer.MongoDBConfig
 
-	// Start with defaults
-	maxPoolSize := defaults.MongoDBMaxPoolSize
-	minPoolSize := defaults.MongoDBMinPoolSize
-	maxConnIdleTime := defaults.MongoDBMaxConnIdleTime
-	serverSelectionTimeout := defaults.MongoDBServerSelectionTimeout
-	connectTimeout := defaults.MongoDBConnectTimeout
-	socketTimeout := defaults.MongoDBSocketTimeout
-	heartbeatInterval := defaults.MongoDBHeartbeatInterval
-
-	// Apply database-level overrides if provided
-	overrides := make(map[string]interface{})
+	// Convert dbConfig to util.MongoDBClientConfig if provided
+	var dbOverrides *util.MongoDBClientConfig
 	if dbConfig != nil {
-		if dbConfig.MongoDBMaxPoolSize > 0 {
-			maxPoolSize = dbConfig.MongoDBMaxPoolSize
-			overrides["max_pool_size"] = maxPoolSize
-		}
-		if dbConfig.MongoDBMinPoolSize > 0 {
-			minPoolSize = dbConfig.MongoDBMinPoolSize
-			overrides["min_pool_size"] = minPoolSize
-		}
-		if dbConfig.MongoDBMaxConnIdleTime > 0 {
-			maxConnIdleTime = dbConfig.MongoDBMaxConnIdleTime
-			overrides["max_conn_idle_time"] = maxConnIdleTime
-		}
-		if dbConfig.MongoDBServerSelectionTimeout > 0 {
-			serverSelectionTimeout = dbConfig.MongoDBServerSelectionTimeout
-			overrides["server_selection_timeout"] = serverSelectionTimeout
-		}
-		if dbConfig.MongoDBConnectTimeout > 0 {
-			connectTimeout = dbConfig.MongoDBConnectTimeout
-			overrides["connect_timeout"] = connectTimeout
-		}
-		if dbConfig.MongoDBSocketTimeout > 0 {
-			socketTimeout = dbConfig.MongoDBSocketTimeout
-			overrides["socket_timeout"] = socketTimeout
-		}
-		if dbConfig.MongoDBHeartbeatInterval > 0 {
-			heartbeatInterval = dbConfig.MongoDBHeartbeatInterval
-			overrides["heartbeat_interval"] = heartbeatInterval
-		}
+		dbOverrides = &dbConfig.MongoDBConfig
 	}
 
-	// Set defaults ONLY if not configured by user
-	if maxPoolSize == 0 {
-		maxPoolSize = 10 // Only use default if user didn't provide a value
-	}
-	if minPoolSize == 0 {
-		minPoolSize = 1 // Only use default if user didn't provide a value
-	}
-	if maxConnIdleTime == 0 {
-		maxConnIdleTime = 30 * time.Second // Only use default if user didn't provide a value
-	}
-	if serverSelectionTimeout == 0 {
-		serverSelectionTimeout = 30 * time.Second // Only use default if user didn't provide a value
-	}
-	if connectTimeout == 0 {
-		connectTimeout = 30 * time.Second // Only use default if user didn't provide a value
-	}
-	if socketTimeout == 0 {
-		socketTimeout = 30 * time.Second // Only use default if user didn't provide a value
-	}
-	if heartbeatInterval == 0 {
-		heartbeatInterval = 10 * time.Second // Only use default if user didn't provide a value
-	}
-
-	// Log the configuration being used
-	if len(overrides) > 0 {
-		c.logger.Info("Using database-specific MongoDB client overrides",
-			zap.String("database", dbName),
-			zap.Any("overrides", overrides))
-	} else {
-		c.logger.Info("Using default MongoDB client settings",
-			zap.String("database", dbName))
-	}
-
-	// Apply settings
-	opts = opts.SetMaxPoolSize(uint64(maxPoolSize))
-	opts = opts.SetMinPoolSize(uint64(minPoolSize))
-	opts = opts.SetMaxConnIdleTime(maxConnIdleTime)
-	opts = opts.SetServerSelectionTimeout(serverSelectionTimeout)
-	opts = opts.SetConnectTimeout(connectTimeout)
-	opts = opts.SetSocketTimeout(socketTimeout)
-	opts = opts.SetHeartbeatInterval(heartbeatInterval)
-
-	// Log final configuration
-	c.logger.Info("MongoDB client configuration applied",
-		zap.String("database", dbName),
-		zap.Int("max_pool_size", maxPoolSize),
-		zap.Int("min_pool_size", minPoolSize),
-		zap.Duration("max_conn_idle_time", maxConnIdleTime),
-		zap.Duration("server_selection_timeout", serverSelectionTimeout),
-		zap.Duration("connect_timeout", connectTimeout),
-		zap.Duration("socket_timeout", socketTimeout),
-		zap.Duration("heartbeat_interval", heartbeatInterval))
-
-	return opts
+	// Use the shared utility function
+	return util.ApplyMongoDBClientSettings(opts, dbName, defaults, dbOverrides, c.logger)
 }
 
 // sanitizeURI removes sensitive information from URI for logging
@@ -725,7 +644,7 @@ func (c *Config) Logger() *zap.Logger {
 	return c.logger
 }
 
-func (c *Config) Metrics() *util.MetricsClient {
+func (c *Config) Metrics() util.MetricsInterface {
 	return c.metrics
 }
 
@@ -739,99 +658,6 @@ func (c *Config) Unlink() bool {
 
 func (c *Config) Ping() bool {
 	return c.ping
-}
-
-func (c *Config) Proxies(log *zap.Logger) ([]*proxy.Proxy, error) {
-	mongos := make(map[string]*mongo.Mongo)
-	for _, client := range c.clients {
-		m, err := mongo.Connect(log, c.metrics, client.opts, c.ping)
-		if err != nil {
-			return nil, err
-		}
-		mongos[client.address] = m
-	}
-
-	mongoLookup := func(address string) *mongo.Mongo {
-		return mongos[address]
-	}
-
-	// Create database router for wildcard database support
-	databaseRouter := proxy.NewDatabaseRouter(log)
-
-	// Add database routes with precedence: exact match → wildcard match
-	databases := c.GetDatabases()
-	for dbName, dbConfig := range databases {
-		// Create MongoDB client for this database
-		var mongoClient *mongo.Mongo
-		var err error
-		if dbConfig.ConnectionString != "" {
-			// Use connection string
-			opts := options.Client().ApplyURI(dbConfig.ConnectionString)
-			// Apply MongoDB client pool settings from config
-			opts = c.applyMongoDBClientSettings(opts, dbName, &dbConfig)
-			mongoClient, err = mongo.Connect(log, c.metrics, opts, c.ping)
-			if err != nil {
-				return nil, fmt.Errorf("failed to connect to database %s: %v", dbName, err)
-			}
-		} else {
-			// Use structured config
-			connectionString := fmt.Sprintf("mongodb://%s:%d/%s", dbConfig.Host, dbConfig.Port, dbConfig.DBName)
-			opts := options.Client().ApplyURI(connectionString)
-			// Apply MongoDB client pool settings from config
-			opts = c.applyMongoDBClientSettings(opts, dbName, &dbConfig)
-			mongoClient, err = mongo.Connect(log, c.metrics, opts, c.ping)
-			if err != nil {
-				return nil, fmt.Errorf("failed to connect to database %s: %v", dbName, err)
-			}
-		}
-
-		// Add route to database router
-		var connectionString string
-		if dbConfig.ConnectionString != "" {
-			connectionString = dbConfig.ConnectionString
-		} else {
-			connectionString = fmt.Sprintf("mongodb://%s:%d/%s", dbConfig.Host, dbConfig.Port, dbConfig.DBName)
-		}
-
-		routeConfig := &proxy.RouteConfig{
-			DatabaseName:     dbName,
-			Label:            dbName,
-			MongoClient:      mongoClient,
-			ConnectionString: connectionString,
-		}
-		databaseRouter.AddRoute(dbName, routeConfig)
-	}
-
-	// Create pool manager
-	// Use MongoDB driver's pool settings for MongoBouncer's pool metrics
-	mongodbMaxPoolSize := c.tomlConfig.Mongobouncer.MongoDBMaxPoolSize
-	if mongodbMaxPoolSize == 0 {
-		mongodbMaxPoolSize = 20 // Default if not configured
-	}
-	mongodbMinPoolSize := c.tomlConfig.Mongobouncer.MongoDBMinPoolSize
-	if mongodbMinPoolSize == 0 {
-		mongodbMinPoolSize = 3 // Default if not configured
-	}
-
-	poolManager := pool.NewManager(
-		log,
-		c.metrics,
-		c.tomlConfig.Mongobouncer.PoolMode,
-		mongodbMinPoolSize, // Use MongoDB driver's min pool size
-		mongodbMaxPoolSize, // Use MongoDB driver's max pool size
-		c.tomlConfig.Mongobouncer.MaxClientConn,
-	)
-
-	var proxies []*proxy.Proxy
-	for _, client := range c.clients {
-		p, err := proxy.NewProxy(log, c.metrics, client.label, c.network, client.address, c.unlink, mongoLookup, poolManager, databaseRouter, c.tomlConfig.Mongobouncer.AuthEnabled, c.tomlConfig.Mongobouncer.RegexCredentialPassthrough)
-		if err != nil {
-			return nil, err
-		}
-		proxies = append(proxies, p)
-	}
-
-	return proxies, nil
 }
 
 // GetDatabases returns the database configurations
@@ -909,49 +735,45 @@ func (c *Config) GetDatabases() map[string]Database {
 
 			// Parse MongoDB client pool overrides
 			if maxpoolsize, ok := v["max_pool_size"].(int64); ok {
-				db.MongoDBMaxPoolSize = int(maxpoolsize)
+				db.MongoDBConfig.MaxPoolSize = int(maxpoolsize)
 			}
 			if minpoolsize, ok := v["min_pool_size"].(int64); ok {
-				db.MongoDBMinPoolSize = int(minpoolsize)
+				db.MongoDBConfig.MinPoolSize = int(minpoolsize)
 			}
 			if maxidletime, ok := v["max_conn_idle_time"].(string); ok {
 				if duration, err := time.ParseDuration(maxidletime); err == nil {
-					db.MongoDBMaxConnIdleTime = duration
+					db.MongoDBConfig.MaxConnIdleTime = duration
 				}
 			}
 			if seltimeout, ok := v["server_selection_timeout"].(string); ok {
 				if duration, err := time.ParseDuration(seltimeout); err == nil {
-					db.MongoDBServerSelectionTimeout = duration
+					db.MongoDBConfig.ServerSelectionTimeout = duration
 				}
 			}
 			if connecttimeout, ok := v["connect_timeout"].(string); ok {
 				if duration, err := time.ParseDuration(connecttimeout); err == nil {
-					db.MongoDBConnectTimeout = duration
+					db.MongoDBConfig.ConnectTimeout = duration
 				}
 			}
 			if sockettimeout, ok := v["socket_timeout"].(string); ok {
 				if duration, err := time.ParseDuration(sockettimeout); err == nil {
-					db.MongoDBSocketTimeout = duration
+					db.MongoDBConfig.SocketTimeout = duration
 				}
 			}
 			if heartbeatinterval, ok := v["heartbeat_interval"].(string); ok {
 				if duration, err := time.ParseDuration(heartbeatinterval); err == nil {
-					db.MongoDBHeartbeatInterval = duration
+					db.MongoDBConfig.HeartbeatInterval = duration
 				}
 			}
-
-			// Legacy fields for backward compatibility
-			if maxpoolsize, ok := v["maxPoolSize"].(int64); ok {
-				db.MaxPoolSize = int(maxpoolsize)
+			if retrywrites, ok := v["retry_writes"].(bool); ok {
+				db.MongoDBConfig.RetryWrites = &retrywrites
 			}
-			if minpoolsize, ok := v["minPoolSize"].(int64); ok {
-				db.MinPoolSize = int(minpoolsize)
-			}
-			if maxidletime, ok := v["maxIdleTimeMS"].(int64); ok {
-				db.MaxIdleTimeMS = int(maxidletime)
-			}
-			if seltimeout, ok := v["serverSelectionTimeoutMS"].(int64); ok {
-				db.ServerSelectionTimeoutMS = int(seltimeout)
+			if topology, ok := v["topology"].(string); ok {
+				topology, err := util.GetTopology(topology)
+				if err != nil {
+					c.logger.Fatal("Error verifying topology", zap.Error(err))
+				}
+				db.MongoDBConfig.Topology = &topology
 			}
 			result[name] = db
 		}
@@ -963,4 +785,14 @@ func (c *Config) GetDatabases() map[string]Database {
 // GetMainConfig returns the main configuration
 func (c *Config) GetMainConfig() MongobouncerConfig {
 	return c.tomlConfig.Mongobouncer
+}
+
+// GetAuthEnabled returns whether authentication is enabled
+func (c *Config) GetAuthEnabled() bool {
+	return c.tomlConfig.Mongobouncer.AuthEnabled
+}
+
+// GetRegexCredentialPassthrough returns whether regex credential passthrough is enabled
+func (c *Config) GetRegexCredentialPassthrough() bool {
+	return c.tomlConfig.Mongobouncer.RegexCredentialPassthrough
 }

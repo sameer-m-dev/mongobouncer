@@ -63,7 +63,7 @@ exact_db.connection_string = "mongodb://admin:admin123@localhost:27017/exact_db"
 ### Client Connection Format
 
 ```bash
-mongodb://localhost:27017/database?appName=username:password
+mongodb://localhost:27017/database?appName=database:username:password
 ```
 
 ### Examples
@@ -72,29 +72,29 @@ mongodb://localhost:27017/database?appName=username:password
 ```bash
 # Route: exact_db = "mongodb://admin:admin123@localhost:27017/exact_db"
 # Client must provide matching credentials
-mongosh "mongodb://localhost:27017/exact_db?appName=admin:admin123"
+mongosh "mongodb://localhost:27017/exact_db?appName=exact_db:admin:admin123"
 ```
 
 #### 2. Wildcard Pattern (With Passthrough)
 ```bash
 # Route: "test_*" = "mongodb://localhost:27017"
 # Client credentials are passed through to MongoDB
-mongosh "mongodb://localhost:27017/test_db1?appName=user1:pass1"
-mongosh "mongodb://localhost:27017/test_db2?appName=user2:pass2"
+mongosh "mongodb://localhost:27017/test_db1?appName=test_db1:user1:pass1"
+mongosh "mongodb://localhost:27017/test_db2?appName=test_db1:user2:pass2"
 ```
 
 #### 3. Full Wildcard (With Passthrough)
 ```bash
 # Route: "*" = "mongodb://localhost:27017"
 # Any database not matched by other patterns uses client credentials
-mongosh "mongodb://localhost:27017/any_database?appName=anyuser:anypass"
+mongosh "mongodb://localhost:27017/any_database?appName=any_database:anyuser:anypass"
 ```
 
 ## Implementation Details
 
 ### Authentication Flow
 
-1. **Client Connection**: Client connects with `appName=username:password`
+1. **Client Connection**: Client connects with `appName=any_database:username:password`
 2. **Route Matching**: MongoBouncer determines if the database matches a wildcard/regex pattern
 3. **Credential Decision**:
    - **Exact match**: Validate credentials against route configuration

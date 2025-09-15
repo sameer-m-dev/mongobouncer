@@ -22,7 +22,7 @@ type MongoLookup func(address string) *mongo.Mongo
 
 type Proxy struct {
 	log     *zap.Logger
-	metrics *util.MetricsClient
+	metrics util.MetricsInterface
 
 	network string
 	address string
@@ -34,11 +34,14 @@ type Proxy struct {
 	authEnabled                bool
 	regexCredentialPassthrough bool
 
+	// MongoDB client settings for dynamic client creation
+	mongodbDefaults util.MongoDBClientConfig // Default MongoDB client settings
+
 	quit chan interface{}
 	kill chan interface{}
 }
 
-func NewProxy(log *zap.Logger, metrics *util.MetricsClient, label, network, address string, unlink bool, mongoLookup MongoLookup, poolManager *pool.Manager, databaseRouter *DatabaseRouter, authEnabled bool, regexCredentialPassthrough bool) (*Proxy, error) {
+func NewProxy(log *zap.Logger, metrics util.MetricsInterface, label, network, address string, unlink bool, mongoLookup MongoLookup, poolManager *pool.Manager, databaseRouter *DatabaseRouter, authEnabled bool, regexCredentialPassthrough bool, mongodbDefaults util.MongoDBClientConfig) (*Proxy, error) {
 	if label != "" {
 		log = log.With(zap.String("cluster", label))
 	}
@@ -55,6 +58,7 @@ func NewProxy(log *zap.Logger, metrics *util.MetricsClient, label, network, addr
 		databaseRouter:             databaseRouter,
 		authEnabled:                authEnabled,
 		regexCredentialPassthrough: regexCredentialPassthrough,
+		mongodbDefaults:            mongodbDefaults,
 
 		quit: make(chan interface{}),
 		kill: make(chan interface{}),
@@ -173,7 +177,7 @@ func (p *Proxy) accept(l net.Listener) {
 				zap.String("network", p.network))
 
 			// Call handleConnection which now returns the database used
-			databaseUsed := handleConnection(log, p.metrics, p.address, c, p.mongoLookup, p.poolManager, p.kill, p.databaseRouter, p.authEnabled, p.regexCredentialPassthrough)
+			databaseUsed := handleConnection(log, p.metrics, p.address, c, p.mongoLookup, p.poolManager, p.kill, p.databaseRouter, p.authEnabled, p.regexCredentialPassthrough, p.mongodbDefaults)
 
 			_ = c.Close()
 			log.Debug("Client connection closed",

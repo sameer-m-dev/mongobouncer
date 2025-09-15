@@ -394,6 +394,20 @@ var (
 	)
 )
 
+// MetricsInterface defines the common interface for metrics clients
+type MetricsInterface interface {
+	Timing(name string, duration time.Duration, tags []string, rate float64) error
+	Incr(name string, tags []string, rate float64) error
+	Gauge(name string, value float64, tags []string, rate float64) error
+	Distribution(name string, value float64, tags []string, rate float64) error
+	BackgroundGauge(name string, tags []string) (increment, decrement BackgroundGaugeCallback)
+	RecordPoolWaitTime(poolName string, duration time.Duration)
+	SetPoolConnections(poolName, state string, count float64)
+	Flush() error
+	Close() error
+	Shutdown(ctx context.Context) error
+}
+
 // MetricsClient provides Prometheus-compatible interface for metrics
 type MetricsClient struct {
 	logger   *zap.Logger

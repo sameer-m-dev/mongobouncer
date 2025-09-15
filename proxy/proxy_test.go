@@ -196,7 +196,7 @@ func setupProxies(t *testing.T, startPort int, count int) []*Proxy {
 		}
 		upstreams[address] = upstream
 
-		proxy, err := NewProxy(zap.L(), metrics, "label", "tcp4", address, false, lookup, nil, nil, false, false)
+		proxy, err := NewProxy(zap.L(), metrics, "label", "tcp4", address, false, lookup, nil, nil, false, false, util.MongoDBClientConfig{})
 		assert.Nil(t, err)
 
 		proxies = append(proxies, proxy)
@@ -230,65 +230,6 @@ func setupClient(t *testing.T, host string, port int, clientOpts ...*options.Cli
 	}
 
 	return client
-}
-
-// TestHostBasedAdminRouting tests the host-based admin routing functionality
-func TestHostBasedAdminRouting(t *testing.T) {
-	if !isMongoDBAvailable() {
-		t.Skip("MongoDB not available for testing")
-	}
-
-	logger := zap.NewNop()
-	databaseRouter := NewDatabaseRouter(logger)
-
-	// Create test route configurations
-	testRoute1 := &RouteConfig{
-		DatabaseName:     "mongobouncer",
-		ConnectionString: "mongodb://localhost:27017/mongobouncer",
-		MongoClient:      nil, // We don't need actual clients for this test
-	}
-
-	testRoute2 := &RouteConfig{
-		DatabaseName:     "analytics",
-		ConnectionString: "mongodb://localhost:27018/analytics",
-		MongoClient:      nil,
-	}
-
-	// Add routes to the router
-	databaseRouter.AddRoute("mongobouncer", testRoute1)
-	databaseRouter.AddRoute("analytics", testRoute2)
-
-	// Create a mock connection for testing
-	c := &connection{
-		log:              logger,
-		databaseRouter:   databaseRouter,
-		intendedDatabase: "mongobouncer", // Client wants to connect to mongobouncer DB
-	}
-
-	// Test host extraction
-	host, port := c.extractHostFromRoute(testRoute1)
-	assert.Equal(t, "localhost", host)
-	assert.Equal(t, "27017", port)
-
-	host, port = c.extractHostFromRoute(testRoute2)
-	assert.Equal(t, "localhost", host)
-	assert.Equal(t, "27018", port)
-
-	// Test determineTargetDatabase with admin operation
-	targetDB := c.determineTargetDatabase("admin", nil)
-	// Should fall back to catch-all or admin since no matching admin route found
-	assert.True(t, targetDB == "*" || targetDB == "admin")
-
-	// Test determineTargetDatabase with non-admin operation
-	c.intendedDatabase = "" // Reset
-	targetDB = c.determineTargetDatabase("mongobouncer", nil)
-	assert.Equal(t, "mongobouncer", targetDB)
-	assert.Equal(t, "mongobouncer", c.intendedDatabase)
-
-	// Now test admin routing with intended database set
-	targetDB = c.determineTargetDatabase("admin", nil)
-	// Should try to route admin to same host as mongobouncer
-	assert.True(t, targetDB == "*" || targetDB == "admin")
 }
 
 func TestIsWildcardOrRegexMatch(t *testing.T) {

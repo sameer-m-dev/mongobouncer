@@ -9,6 +9,8 @@ import (
 	"go.mongodb.org/mongo-driver/x/bsonx/bsoncore"
 	"go.mongodb.org/mongo-driver/x/mongo/driver"
 	"go.mongodb.org/mongo-driver/x/mongo/driver/wiremessage"
+
+	"github.com/sameer-m-dev/mongobouncer/util"
 )
 
 type Message struct {
@@ -143,11 +145,8 @@ func (q *opQuery) TransactionDetails() *TransactionDetails {
 
 func (q *opQuery) DatabaseName() string {
 	// Extract database from fullCollectionName (format: database.collection)
-	parts := strings.SplitN(q.fullCollectionName, ".", 2)
-	if len(parts) >= 2 {
-		return parts[0]
-	}
-	return ""
+	info := util.ParseCollectionName(q.fullCollectionName)
+	return info.Database
 }
 
 // see https://github.com/mongodb/mongo-go-driver/blob/v1.7.2/x/mongo/driver/topology/server_test.go#L968-L1003
@@ -632,11 +631,8 @@ func (g *opGetMore) TransactionDetails() *TransactionDetails {
 
 func (g *opGetMore) DatabaseName() string {
 	// Extract database from fullCollectionName (format: database.collection)
-	parts := strings.SplitN(g.fullCollectionName, ".", 2)
-	if len(parts) >= 2 {
-		return parts[0]
-	}
-	return ""
+	info := util.ParseCollectionName(g.fullCollectionName)
+	return info.Database
 }
 
 // see https://github.com/mongodb/mongo-go-driver/blob/v1.7.2/x/mongo/driver/operation.go#L1297-L1358
@@ -730,11 +726,8 @@ func (u *opUpdate) TransactionDetails() *TransactionDetails {
 
 func (u *opUpdate) DatabaseName() string {
 	// Extract database from fullCollectionName (format: database.collection)
-	parts := strings.SplitN(u.fullCollectionName, ".", 2)
-	if len(parts) >= 2 {
-		return parts[0]
-	}
-	return ""
+	info := util.ParseCollectionName(u.fullCollectionName)
+	return info.Database
 }
 
 func decodeUpdate(reqID int32, wm []byte) (*opUpdate, error) {
@@ -823,11 +816,8 @@ func (i *opInsert) TransactionDetails() *TransactionDetails {
 
 func (i *opInsert) DatabaseName() string {
 	// Extract database from fullCollectionName (format: database.collection)
-	parts := strings.SplitN(i.fullCollectionName, ".", 2)
-	if len(parts) >= 2 {
-		return parts[0]
-	}
-	return ""
+	info := util.ParseCollectionName(i.fullCollectionName)
+	return info.Database
 }
 
 func decodeInsert(reqID int32, wm []byte) (*opInsert, error) {
@@ -916,11 +906,8 @@ func (d *opDelete) TransactionDetails() *TransactionDetails {
 
 func (d *opDelete) DatabaseName() string {
 	// Extract database from fullCollectionName (format: database.collection)
-	parts := strings.SplitN(d.fullCollectionName, ".", 2)
-	if len(parts) >= 2 {
-		return parts[0]
-	}
-	return ""
+	info := util.ParseCollectionName(d.fullCollectionName)
+	return info.Database
 }
 
 func decodeDelete(reqID int32, wm []byte) (*opDelete, error) {

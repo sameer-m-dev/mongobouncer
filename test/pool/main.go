@@ -51,10 +51,10 @@ func main() {
 		{"With 3000", 3000, "SUCCESS"},
 
 		// Extreme scale scenarios
-		// {"With 3500", 3500, "SUCCESS"},
-		// {"With 4000", 4000, "SUCCESS"},
-		// {"With 4500", 4500, "SUCCESS"},
-		// {"With 5000", 5000, "SUCCESS"},
+		{"With 3500", 3500, "SUCCESS"},
+		{"With 4000", 4000, "SUCCESS"},
+		{"With 4500", 4500, "SUCCESS"},
+		{"With 5000", 5000, "SUCCESS"},
 	}
 
 	allPassed := true
@@ -86,14 +86,14 @@ func main() {
 func testConcurrentConnections(numWorkers int) bool {
 	// Connect to MongoBouncer
 	client, err := mongo.Connect(context.Background(),
-		options.Client().ApplyURI("mongodb://localhost:27017"))
+		options.Client().ApplyURI("mongodb://localhost:27017/app_prod_rs6?retryWrites=true"))
 	if err != nil {
 		log.Printf("Failed to connect: %v", err)
 		return false
 	}
 	defer client.Disconnect(context.Background())
 
-	db := client.Database("sameer")
+	db := client.Database("app_prod_rs6")
 	coll := db.Collection("test_collection")
 
 	// Clean up

@@ -140,6 +140,41 @@ services:
       start_period: 30s
     restart: always
 
+  # MongoDB 8 Standalone without Auth (for testing)
+  mongo8-noauth:
+    image: "mongo:8.0"
+    ports:
+      - "27022:27017"
+    networks:
+      - mongobouncernet
+    volumes:
+      - .docker-compose-data/mongo8-noauth:/data/db
+    command: ["mongod", "--bind_ip_all"]
+    healthcheck:
+      test: ["CMD", "mongosh", "--eval", "db.adminCommand('ping')"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 30s
+    restart: always
+
+  mongo6-noauth:
+    image: "mongo:6.0"
+    ports:
+      - "27023:27017"
+    networks:
+      - mongobouncernet
+    volumes:
+      - .docker-compose-data/mongo6-noauth:/data/db
+    command: ["mongod", "--bind_ip_all"]
+    healthcheck:
+      test: ["CMD", "mongosh", "--eval", "db.adminCommand('ping')"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 30s
+    restart: always
+
   # MongoDB 6 Replica Set Initializer
   mongo6-rs-init:
     image: "mongo:6.0"

@@ -29,7 +29,7 @@ const (
 // Manager manages connection pools for different databases
 type Manager struct {
 	logger        *zap.Logger
-	metrics       *util.MetricsClient
+	metrics       util.MetricsInterface
 	pools         map[string]*ConnectionPool
 	defaultMode   PoolMode
 	minPoolSize   int
@@ -46,7 +46,7 @@ type ConnectionPool struct {
 	mode        PoolMode
 	mongoClient *mongobouncer.Mongo // Single client, reused
 	logger      *zap.Logger
-	metrics     *util.MetricsClient
+	metrics     util.MetricsInterface
 	stats       *PoolStats
 
 	// Connection health management
@@ -92,7 +92,7 @@ type PoolStats struct {
 }
 
 // NewManager creates a new pool manager
-func NewManager(logger *zap.Logger, metrics *util.MetricsClient, defaultMode string, minPoolSize, maxPoolSize, maxClientConn int) *Manager {
+func NewManager(logger *zap.Logger, metrics util.MetricsInterface, defaultMode string, minPoolSize, maxPoolSize, maxClientConn int) *Manager {
 	mode := SessionMode
 	switch defaultMode {
 	case "transaction":

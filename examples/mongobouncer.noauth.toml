@@ -1,0 +1,112 @@
+# MongoBouncer Configuration File - No Authentication Setup
+# MongoDB Connection Bouncer - pgBouncer equivalent for MongoDB
+# This configuration is designed for testing and development without authentication
+
+[mongobouncer]
+# =====================================
+# Network & Server Settings
+# =====================================
+listen_addr = "0.0.0.0"
+listen_port = 27017
+
+# =====================================
+# Logging & Debugging
+# =====================================
+log_level = "info" # debug, info, warn, error
+
+# =====================================
+# Connection Pooling & Performance
+# =====================================
+pool_mode = "statement"              # session, transaction, statement
+max_pool_size = 10                   # MongoDB driver's internal pool size
+min_pool_size = 3                    # MongoDB driver's minimum pool size
+max_client_conn = 0                  # Maximum client connections (0 = unlimited)
+max_conn_idle_time = "30s"           # How long to keep idle connections
+server_selection_timeout = "5s"      # Server selection timeout
+connect_timeout = "5s"               # Connection establishment timeout
+socket_timeout = "30s"               # Socket operation timeout
+heartbeat_interval = "10s"           # Heartbeat frequency
+retry_writes = false                 # Disable retryable writes for standalone MongoDB
+auth_enabled = false                 # Disable authentication for testing
+regex_credential_passthrough = false # Not needed without auth
+ping = true
+
+# =====================================
+# Metrics & Monitoring (Prometheus)
+# =====================================
+metrics_address = "localhost:9090"
+metrics_enabled = true
+
+# =====================================
+# Network Settings
+# =====================================
+network = "tcp4" # tcp4, tcp6, unix
+unlink = false   # Remove unix socket file on exit
+
+# =====================================
+# Database Configurations
+# =====================================
+[databases]
+# MongoDB 8 Standalone without authentication (port 27023)
+# This is the main database for testing
+
+# Test database for comprehensive tests
+mongobouncer_test = { connection_string = "mongodb://127.0.0.1:27023/mongobouncer_test?retryWrites=false" }
+
+# Multi-database setup for testing
+users = { connection_string = "mongodb://127.0.0.1:27023/users?retryWrites=false" }
+orders = { connection_string = "mongodb://127.0.0.1:27023/orders?retryWrites=false" }
+inventory = { connection_string = "mongodb://127.0.0.1:27023/inventory?retryWrites=false" }
+
+# Pool testing database
+pool_test = { connection_string = "mongodb://127.0.0.1:27023/pool_test?retryWrites=false" }
+
+# Benchmark test databases
+db10 = { connection_string = "mongodb://127.0.0.1:27023/db10?retryWrites=false" }
+prefix_test = { connection_string = "mongodb://127.0.0.1:27023/prefix_test?retryWrites=false" }
+test_suffix = { connection_string = "mongodb://127.0.0.1:27023/test_suffix?retryWrites=false" }
+unknown = { connection_string = "mongodb://127.0.0.1:27023/unknown?retryWrites=false" }
+
+# Wildcard pattern for any database starting with "test_"
+"test_*" = { connection_string = "mongodb://127.0.0.1:27023/default?retryWrites=false" }
+
+# Catch-all wildcard for any other database
+"*" = { connection_string = "mongodb://127.0.0.1:27023/default?retryWrites=false", retry_writes = false }
+
+# =====================================
+# Usage Examples
+# =====================================
+# 1. Start mongobouncer:
+#    ./mongobouncer -config mongobouncer.noauth.toml
+#
+# 2. Connect with mongo shell (no authentication required):
+#    mongosh "mongodb://localhost:27017/mongobouncer_test"
+#    mongosh "mongodb://localhost:27017/users"
+#    mongosh "mongodb://localhost:27017/orders"
+#    mongosh "mongodb://localhost:27017/inventory"
+#    mongosh "mongodb://localhost:27017/pool_test"
+#
+# 3. View metrics:
+#    curl http://localhost:9090/metrics
+#
+# 4. Health check:
+#    curl http://localhost:9090/health
+#
+# 5. Test wildcard patterns:
+#    mongosh "mongodb://localhost:27017/test_anything"  # Will route to test_* pattern
+#    mongosh "mongodb://localhost:27017/any_database"   # Will route to * pattern
+
+# =====================================
+# Testing Notes
+# =====================================
+# This configuration is specifically designed for:
+# 1. Running comprehensive tests without authentication complexity
+# 2. Multi-database testing scenarios
+# 3. Pool testing and performance benchmarking
+# 4. Development and debugging
+#
+# The MongoDB instance runs on port 27023 without authentication,
+# making it easy to connect and test various scenarios.
+#
+# All databases are routed to the same MongoDB instance but can be
+# logically separated for testing different use cases.

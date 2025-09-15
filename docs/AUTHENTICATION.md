@@ -42,8 +42,46 @@ Client                    MongoBouncer                MongoDB
 ### Credential Format
 
 Credentials are passed in the `appName` parameter using the format:
+
 ```
-mongodb://localhost:27017/database?appName=username:password
+mongodb://localhost:27017/database?appName=database:username:password
+```
+
+The format includes the database name to ensure credential uniqueness and prevent cross-database access vulnerabilities.
+
+## Credential Uniqueness and Database Isolation
+
+### The Problem with Previous Approach
+
+The original authentication approach had a critical security limitation: **credential uniqueness was not enforced**. This meant that if multiple database routes used the same credentials, a client could potentially access multiple databases with the same authentication.
+
+**Example of the Problem:**
+```toml
+[databases.admin]
+connection_string = "mongodb://admin:admin123@host:27019/admin"
+
+[databases.app_db]
+connection_string = "mongodb://admin:admin123@host:27018/app_db"  # Same credentials!
+```
+
+With the previous approach, a client using `appName=admin:admin123` could access **both** the `admin` and `app_db` databases, creating a security vulnerability.
+
+### The Solution: Database-Specific Credentials
+
+The `database:username:password` format solves this by:
+
+1. **Explicit Database Declaration**: The client must specify which database they intend to access
+2. **Database Mismatch Validation**: MongoBouncer validates that the appName database matches the target database
+3. **Credential Isolation**: Each database route can have unique credentials without conflicts
+
+**Example with Current Format:**
+```bash
+# ✅ Works - database matches target
+mongosh "mongodb://localhost:27017/admin?appName=admin:admin:admin123"
+
+# ❌ Fails - database mismatch
+mongosh "mongodb://localhost:27017/admin?appName=app_db:admin:admin123"
+# Error: authentication failed: database mismatch - appName specifies 'app_db' but connecting to 'admin'
 ```
 
 ## Why This Method?
@@ -262,10 +300,28 @@ func (c *connection) extractAuthSourceFromMessage(msg *mongo.Message) {
 ### Secure Mode (Default)
 
 ```bash
-# Requires authentication
-mongosh "mongodb://localhost:27017/admin?appName=admin:admin123" --eval "db.runCommand({ping: 1})"
+# Admin database
+mongosh "mongodb://localhost:27017/admin?appName=admin:admin:admin123" --eval "db.runCommand({ping: 1})"
 
-# Will fail without appName
+# Application database
+mongosh "mongodb://localhost:27017/app_db?appName=app_db:appuser:apppass" --eval "db.runCommand({ping: 1})"
+
+# Analytics database
+mongosh "mongodb://localhost:27017/analytics?appName=analytics:analytics:analyticspass" --eval "db.runCommand({ping: 1})"
+```
+
+### Authentication Failures
+
+```bash
+# ❌ Database mismatch
+mongosh "mongodb://localhost:27017/admin?appName=app_db:admin:admin123" --eval "db.runCommand({ping: 1})"
+# Error: authentication failed: database mismatch - appName specifies 'app_db' but connecting to 'admin'
+
+# ❌ Wrong credentials
+mongosh "mongodb://localhost:27017/admin?appName=admin:wrong:password" --eval "db.runCommand({ping: 1})"
+# Error: authentication failed: invalid credentials
+
+# ❌ No credentials when required
 mongosh "mongodb://localhost:27017/admin" --eval "db.runCommand({ping: 1})"
 # Error: MongoServerSelectionError: connection closed
 ```
@@ -283,19 +339,6 @@ mongosh "mongodb://localhost:27017/admin" --eval "db.runCommand({ping: 1})"
 # Success: { ok: 1, ... }
 ```
 
-### Different Databases
-
-```bash
-# Admin database
-mongosh "mongodb://localhost:27017/admin?appName=admin:admin123"
-
-# Application database  
-mongosh "mongodb://localhost:27017/app_db?appName=appuser:apppass"
-
-# Analytics database
-mongosh "mongodb://localhost:27017/analytics?appName=analytics:analyticspass"
-```
-
 ## Troubleshooting
 
 ### Common Issues
@@ -308,16 +351,36 @@ mongosh "mongodb://localhost:27017/analytics?appName=analytics:analyticspass"
 1. Check logs for authentication messages
 2. Verify `auth_enabled = true` in configuration
 3. Confirm database route exists in TOML
-4. Check credential format: `username:password`
+4. Check credential format: `database:username:password`
+5. Verify database name in appName matches target database
 
 **Logs to Check**:
 ```json
 {"level":"debug","msg":"Validating credentials from appName","auth_enabled":true}
-{"level":"debug","msg":"Extracted appName","app_name":"admin:admin123"}
-{"level":"debug","msg":"Credentials validated successfully"}
+{"level":"debug","msg":"Extracted appName","app_name":"admin:admin:admin123"}
+{"level":"debug","msg":"Parsed credentials from appName","app_database":"admin","username":"admin"}
+{"level":"debug","msg":"Credentials match database configuration","username":"admin","target_database":"admin"}
 ```
 
-#### 2. Authentication Not Required When Expected
+#### 2. Database Mismatch Error
+
+**Symptoms**: `authentication failed: database mismatch - appName specifies 'X' but connecting to 'Y'`
+
+**Debug Steps**:
+1. Verify the database name in appName matches the target database
+2. Check that you're connecting to the correct database in the connection string
+3. Ensure appName format is `database:username:password`
+
+**Example Fix**:
+```bash
+# ❌ Wrong - database mismatch
+mongosh "mongodb://localhost:27017/admin?appName=app_db:admin:admin123"
+
+# ✅ Correct - database matches
+mongosh "mongodb://localhost:27017/admin?appName=admin:admin:admin123"
+```
+
+#### 3. Authentication Not Required When Expected
 
 **Symptoms**: Connections succeed without `appName` when `auth_enabled = true`
 
@@ -331,7 +394,7 @@ mongosh "mongodb://localhost:27017/analytics?appName=analytics:analyticspass"
 {"level":"debug","msg":"Authentication is disabled, skipping credential validation"}
 ```
 
-#### 3. Wrong Credentials Accepted
+#### 4. Wrong Credentials Accepted
 
 **Symptoms**: Authentication succeeds with incorrect credentials
 
@@ -346,8 +409,11 @@ mongosh "mongodb://localhost:27017/analytics?appName=analytics:analyticspass"
 # Check configuration loading
 ./bin/mongobouncer -config examples/mongobouncer.docker-compose.toml -verbose
 
-# Test with authentication enabled
-mongosh "mongodb://localhost:27017/admin?appName=admin:admin123" --eval "db.runCommand({ping: 1})"
+# Test with current format
+mongosh "mongodb://localhost:27017/admin?appName=admin:admin:admin123" --eval "db.runCommand({ping: 1})"
+
+# Test database mismatch (should fail)
+mongosh "mongodb://localhost:27017/admin?appName=app_db:admin:admin123" --eval "db.runCommand({ping: 1})"
 
 # Test with authentication disabled
 mongosh "mongodb://localhost:27017/admin" --eval "db.runCommand({ping: 1})"
@@ -364,21 +430,29 @@ grep "auth_enabled.*true" mongobouncer.log
 # Authentication disabled  
 grep "Authentication is disabled" mongobouncer.log
 
-# Credential validation
-grep "Credentials validated successfully" mongobouncer.log
+# Credential parsing
+grep "Parsed credentials from appName" mongobouncer.log
+
+# Database mismatch errors
+grep "database mismatch" mongobouncer.log
+
+# Credential validation success
+grep "Credentials match database configuration" mongobouncer.log
 
 # Authentication failures
-grep "authentication required" mongobouncer.log
+grep "authentication failed" mongobouncer.log
 ```
 
 ## Conclusion
 
-The `appName`-based authentication approach provides a robust, simple, and effective solution for proxy-level authentication in MongoBouncer. By leveraging MongoDB's universal `isMaster` handshake mechanism, we achieve:
+The `appName`-based authentication approach provides a robust, simple, and effective solution for proxy-level authentication in MongoBouncer. The `database:username:password` format addresses critical security concerns by ensuring credential uniqueness and database isolation. By leveraging MongoDB's universal `isMaster` handshake mechanism, we achieve:
 
 - **Universal coverage** for all operations
 - **Early authentication** before any data access
 - **Simple implementation** without complex SASL handling
 - **Configuration flexibility** for different deployment scenarios
 - **Secure by default** behavior
+- **Credential isolation** between database routes
+- **Database-specific authentication** preventing cross-database access
 
-This approach successfully addresses the limitations of previous methods while providing a clean, maintainable authentication system that integrates seamlessly with MongoDB's connection flow.
+This approach successfully addresses the limitations of previous methods while providing a clean, maintainable authentication system that integrates seamlessly with MongoDB's connection flow and ensures proper credential isolation between different database routes.

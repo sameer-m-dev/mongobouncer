@@ -51,7 +51,7 @@ type HealthStats struct {
 
 type Mongo struct {
 	log     *zap.Logger
-	metrics *util.MetricsClient
+	metrics util.MetricsInterface
 	opts    *options.ClientOptions
 
 	mu           sync.RWMutex
@@ -77,7 +77,7 @@ func extractTopology(c *mongo.Client) *topology.Topology {
 }
 
 // createPoolMonitor creates a pool monitor that tracks connection pool events
-func createPoolMonitor(log *zap.Logger, metrics *util.MetricsClient, databaseName string, poolStats *PoolStats) *event.PoolMonitor {
+func createPoolMonitor(log *zap.Logger, metrics util.MetricsInterface, databaseName string, poolStats *PoolStats) *event.PoolMonitor {
 	return &event.PoolMonitor{
 		Event: func(evt *event.PoolEvent) {
 			poolStats.mu.Lock()
@@ -194,7 +194,7 @@ func extractDatabaseName(opts *options.ClientOptions) string {
 	return "default"
 }
 
-func Connect(log *zap.Logger, metrics *util.MetricsClient, opts *options.ClientOptions, ping bool) (*Mongo, error) {
+func Connect(log *zap.Logger, metrics util.MetricsInterface, opts *options.ClientOptions, ping bool) (*Mongo, error) {
 	// timeout shouldn't be hit if ping == false, as Connect doesn't block the current goroutine
 	ctx, cancel := context.WithTimeout(context.Background(), pingTimeout)
 	defer cancel()
@@ -548,7 +548,7 @@ func (m *Mongo) RoundTrip(msg *Message, tags []string) (_ *Message, err error) {
 				}
 			}
 			_ = m.metrics.Incr("server_selection", []string{fmt.Sprintf("database:%s", databaseName)}, 1)
-			
+
 			// Update pool metrics with the actual database name
 			// This ensures pool metrics show the actual database names instead of hardcoded values
 			m.UpdatePoolMetricsForDatabase(databaseName)
