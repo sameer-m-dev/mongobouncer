@@ -38,6 +38,14 @@ var (
 		[]string{},
 	)
 
+	// Health status metric
+	mongobouncerUp = prometheus.NewGauge(
+		prometheus.GaugeOpts{
+			Name: "mongobouncer_up",
+			Help: "Whether MongoBouncer is running and healthy (1 = up, 0 = down)",
+		},
+	)
+
 	// Message handling metrics
 	messageHandleDuration = prometheus.NewHistogramVec(
 		prometheus.HistogramOpts{
@@ -85,10 +93,42 @@ var (
 		[]string{"database"},
 	)
 
+	cursorsOpenedTotal = prometheus.NewCounterVec(
+		prometheus.CounterOpts{
+			Name: "mongobouncer_cursors_opened_total",
+			Help: "Total number of cursors opened",
+		},
+		[]string{"database"},
+	)
+
+	cursorsClosedTotal = prometheus.NewCounterVec(
+		prometheus.CounterOpts{
+			Name: "mongobouncer_cursors_closed_total",
+			Help: "Total number of cursors closed",
+		},
+		[]string{"database"},
+	)
+
 	transactionsActive = prometheus.NewGaugeVec(
 		prometheus.GaugeOpts{
 			Name: "mongobouncer_transactions_active_total",
 			Help: "Number of transactions being tracked (for client sessions -> server mapping)",
+		},
+		[]string{"database"},
+	)
+
+	transactionsCommittedTotal = prometheus.NewCounterVec(
+		prometheus.CounterOpts{
+			Name: "mongobouncer_transactions_committed_total",
+			Help: "Total number of transactions committed",
+		},
+		[]string{"database"},
+	)
+
+	transactionsAbortedTotal = prometheus.NewCounterVec(
+		prometheus.CounterOpts{
+			Name: "mongobouncer_transactions_aborted_total",
+			Help: "Total number of transactions aborted",
 		},
 		[]string{"database"},
 	)
@@ -119,14 +159,6 @@ var (
 			Help: "Go driver connection pool events",
 		},
 		[]string{"event_type"},
-	)
-
-	clientConnections = prometheus.NewGaugeVec(
-		prometheus.GaugeOpts{
-			Name: "mongobouncer_client_connections_total",
-			Help: "Current number of client connections by state",
-		},
-		[]string{"state"}, // state: active, waiting
 	)
 
 	requestsTotal = prometheus.NewCounterVec(
@@ -178,24 +210,24 @@ var (
 		[]string{"database"},
 	)
 
-	poolCheckoutTotal = prometheus.NewCounterVec(
-		prometheus.CounterOpts{
+	poolCheckoutTotal = prometheus.NewGaugeVec(
+		prometheus.GaugeOpts{
 			Name: "mongobouncer_pool_checkout_total",
 			Help: "Total number of connection checkouts from MongoBouncer pool",
 		},
 		[]string{"database"},
 	)
 
-	poolCheckinTotal = prometheus.NewCounterVec(
-		prometheus.CounterOpts{
+	poolCheckinTotal = prometheus.NewGaugeVec(
+		prometheus.GaugeOpts{
 			Name: "mongobouncer_pool_checkin_total",
 			Help: "Total number of connection checkins to MongoBouncer pool",
 		},
 		[]string{"database"},
 	)
 
-	poolCheckoutFailuresTotal = prometheus.NewCounterVec(
-		prometheus.CounterOpts{
+	poolCheckoutFailuresTotal = prometheus.NewGaugeVec(
+		prometheus.GaugeOpts{
 			Name: "mongobouncer_pool_checkout_failures_total",
 			Help: "Total number of connection checkout failures from MongoBouncer pool",
 		},
@@ -282,16 +314,20 @@ func NewMetricsClient(logger *zap.Logger, metricsAddr string) (*MetricsClient, e
 		openConnections,
 		connectionOpenedTotal,
 		connectionClosedTotal,
+		mongobouncerUp,
 		messageHandleDuration,
 		roundTripDuration,
 		requestSizeBytes,
 		responseSizeBytes,
 		cursorsActive,
+		cursorsOpenedTotal,
+		cursorsClosedTotal,
 		transactionsActive,
+		transactionsCommittedTotal,
+		transactionsAbortedTotal,
 		serverSelectionDuration,
 		checkoutConnectionDuration,
 		// New comprehensive metrics
-		clientConnections,
 		requestsTotal,
 		errorsTotal,
 		sessionsActive,
@@ -330,6 +366,9 @@ func NewMetricsClient(logger *zap.Logger, metricsAddr string) (*MetricsClient, e
 		registry: registry,
 	}
 
+	// Set MongoBouncer as up when metrics client starts
+	mongobouncerUp.Set(1)
+
 	// Start metrics server in background
 	go func() {
 		logger.Info("Starting Prometheus metrics server", zap.String("address", metricsAddr))
@@ -343,6 +382,8 @@ func NewMetricsClient(logger *zap.Logger, metricsAddr string) (*MetricsClient, e
 
 // Shutdown gracefully shuts down the metrics server
 func (m *MetricsClient) Shutdown(ctx context.Context) error {
+	// Set MongoBouncer as down when shutting down
+	mongobouncerUp.Set(0)
 	return m.server.Shutdown(ctx)
 }
 
@@ -389,6 +430,18 @@ func (m *MetricsClient) Incr(name string, tags []string, rate float64) error {
 	case "server_selection":
 		database := parseDatabaseTag(tags)
 		serverSelectionTotal.WithLabelValues(database).Inc()
+	case "cursor_opened":
+		database := parseDatabaseTag(tags)
+		cursorsOpenedTotal.WithLabelValues(database).Inc()
+	case "cursor_closed":
+		database := parseDatabaseTag(tags)
+		cursorsClosedTotal.WithLabelValues(database).Inc()
+	case "transaction_committed":
+		database := parseDatabaseTag(tags)
+		transactionsCommittedTotal.WithLabelValues(database).Inc()
+	case "transaction_aborted":
+		database := parseDatabaseTag(tags)
+		transactionsAbortedTotal.WithLabelValues(database).Inc()
 	default:
 		// Handle pool events
 		poolEventCounters.WithLabelValues(name).Inc()
@@ -408,9 +461,6 @@ func (m *MetricsClient) Gauge(name string, value float64, tags []string, rate fl
 	case "transactions":
 		database := parseDatabaseTag(tags)
 		transactionsActive.WithLabelValues(database).Set(value)
-	case "client_connections":
-		state := parseStateTag(tags)
-		clientConnections.WithLabelValues(state).Set(value)
 	case "sessions_active":
 		database := parseDatabaseTag(tags)
 		sessionsActive.WithLabelValues(database).Add(value)
@@ -430,13 +480,13 @@ func (m *MetricsClient) Gauge(name string, value float64, tags []string, rate fl
 		poolUtilizationRatio.WithLabelValues(database).Set(value)
 	case "pool_checkout_total":
 		database := parseDatabaseTag(tags)
-		poolCheckoutTotal.WithLabelValues(database).Add(value)
+		poolCheckoutTotal.WithLabelValues(database).Set(value)
 	case "pool_checkin_total":
 		database := parseDatabaseTag(tags)
-		poolCheckinTotal.WithLabelValues(database).Add(value)
+		poolCheckinTotal.WithLabelValues(database).Set(value)
 	case "pool_checkout_failures_total":
 		database := parseDatabaseTag(tags)
-		poolCheckoutFailuresTotal.WithLabelValues(database).Add(value)
+		poolCheckoutFailuresTotal.WithLabelValues(database).Set(value)
 	}
 
 	return nil

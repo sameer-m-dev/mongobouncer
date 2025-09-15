@@ -14,10 +14,10 @@ import (
 const (
 	// Configuration
 	NUM_CONCURRENT_CLIENTS = 50  // Number of concurrent client connections
-	OPERATIONS_PER_CLIENT  = 100 // Operations per client
+	OPERATIONS_PER_CLIENT  = 500 // Operations per client
 	OPERATION_DELAY_MS     = 100 // Delay between operations (ms)
-	LONG_RUNNING_DURATION  = 30  // Duration for long-running connections (seconds)
-	MONITORING_INTERVAL    = 5   // Metrics monitoring interval (seconds)
+	LONG_RUNNING_DURATION  = 120 // Duration for long-running connections (seconds)
+	MONITORING_INTERVAL    = 10  // Metrics monitoring interval (seconds)
 )
 
 type ClientStats struct {

@@ -193,6 +193,11 @@ helm install mongobouncer ./deploy/helm/mongobouncer
 - **Sharded Clusters**: Distributed MongoDB with `mongos` routing
 - **Mixed Environments**: Simultaneous connections to different topology types
 
+### Limitations
+
+**Current Limitations:**
+- ❌ **Multi-Document Transactions**: MongoDB transactions (`startTransaction`, `commitTransaction`, `abortTransaction`) are not fully supported. For applications requiring transaction support, consider using direct MongoDB connections or implementing application-level transaction management
+
 ### Authentication
 
 MongoBouncer implements a unique proxy-level authentication system that leverages MongoDB's `isMaster` handshake mechanism. This approach provides secure authentication without the complexity of traditional SASL authentication.
@@ -237,33 +242,52 @@ For detailed information about the authentication system, implementation details
 ### Prometheus Metrics
 `mongobouncer` supports Prometheus metrics collection with a built-in HTTP endpoint for scraping. By default it serves metrics on `localhost:9090/metrics`. The following metrics are reported:
 
-**Connection Metrics:**
- - `mongobouncer_open_connections_total` (Gauge) - Current number of open connections between the proxy and the application
- - `mongobouncer_connections_opened_total` (Counter) - Total number of connections opened with the application
- - `mongobouncer_connections_closed_total` (Counter) - Total number of connections closed with the application
+**Health Metrics:**
+- `mongobouncer_up` (Gauge) - Whether MongoBouncer is running and healthy (1 = up, 0 = down)
 
-**Message Handling Metrics:**
- - `mongobouncer_message_handle_duration_seconds` (Histogram) - End-to-end time handling an incoming message from the application
- - `mongobouncer_round_trip_duration_seconds` (Histogram) - Round trip time sending a request and receiving a response from MongoDB
- - `mongobouncer_request_size_bytes` (Histogram) - Request size to MongoDB
- - `mongobouncer_response_size_bytes` (Histogram) - Response size from MongoDB
+**Connection Metrics:**
+- `mongobouncer_open_connections_total` (Gauge) - Current number of open connections between the proxy and the application
+- `mongobouncer_client_connections_total` (Gauge) - Current number of client connections by state (active, waiting)
+- `mongobouncer_sessions_active_total` (Gauge) - Number of active client sessions
+- `mongobouncer_max_client_connections_total` (Gauge) - Maximum allowed client connections
+- `mongobouncer_connections_opened_total` (Counter) - Total number of connections opened with the application
+- `mongobouncer_connections_closed_total` (Counter) - Total number of connections closed with the application
+
+**Performance Metrics:**
+- `mongobouncer_message_handle_duration_seconds` (Histogram) - End-to-end time handling an incoming message from the application
+- `mongobouncer_round_trip_duration_seconds` (Histogram) - Round trip time sending a request and receiving a response from MongoDB
+- `mongobouncer_server_selection_duration_seconds` (Histogram) - Go driver server selection timing
+- `mongobouncer_checkout_connection_duration_seconds` (Histogram) - Go driver connection checkout timing
+- `mongobouncer_pool_checkout_duration_seconds` (Histogram) - Time spent checking out connections from MongoBouncer pool
+- `mongobouncer_client_wait_duration_seconds` (Histogram) - Time clients spend waiting for available connections
+
+**Request/Response Metrics:**
+- `mongobouncer_request_size_bytes` (Histogram) - Request size to MongoDB
+- `mongobouncer_response_size_bytes` (Histogram) - Response size from MongoDB
+- `mongobouncer_requests_total` (Counter) - Total number of requests processed by database and operation
+- `mongobouncer_errors_total` (Counter) - Total number of errors by type and database
+
+**Pool Metrics:**
+- `mongobouncer_pool_active_connections` (Gauge) - Number of active connections in MongoBouncer pool
+- `mongobouncer_pool_total_connections` (Gauge) - Total number of connections in MongoBouncer pool
+- `mongobouncer_pool_max_connections` (Gauge) - Maximum number of connections allowed in MongoBouncer pool
+- `mongobouncer_pool_utilization_ratio` (Gauge) - MongoBouncer pool utilization ratio (active/max)
+- `mongobouncer_pool_checkout_total` (Gauge) - Total number of connection checkouts from MongoBouncer pool
+- `mongobouncer_pool_checkin_total` (Gauge) - Total number of connection checkins to MongoBouncer pool
+- `mongobouncer_pool_checkout_failures_total` (Gauge) - Total number of connection checkout failures from MongoBouncer pool
+- `mongobouncer_pool_events_total` (Counter) - Go driver connection pool events by event type
 
 **Cursor and Transaction Tracking:**
- - `mongobouncer_cursors_active_total` (Gauge) - Number of open cursors being tracked (for cursor -> server mapping)
- - `mongobouncer_transactions_active_total` (Gauge) - Number of transactions being tracked (for client sessions -> server mapping)
+- `mongobouncer_cursors_active_total` (Gauge) - Number of open cursors being tracked (for cursor -> server mapping)
+- `mongobouncer_transactions_active_total` (Gauge) - Number of transactions being tracked (for client sessions -> server mapping)
 
 **MongoDB Driver Metrics:**
- - `mongobouncer_server_selection_duration_seconds` (Histogram) - Go driver server selection timing
- - `mongobouncer_checkout_connection_duration_seconds` (Histogram) - Go driver connection checkout timing
- - `mongobouncer_pool_checked_out_connections_total` (Gauge) - Number of connections checked out from the Go driver connection pool
- - `mongobouncer_pool_open_connections_total` (Gauge) - Number of open connections from the Go driver to MongoDB
- - `mongobouncer_pool_events_total` (Counter) - Go driver connection pool events (by event type)
- - `mongobouncer_pool_wait_duration_seconds` (Histogram) - Time spent waiting for connections from the pool
- - `mongobouncer_pool_connections_total` (Gauge) - Current number of connections in the pool (by state: available, in_use)
+- `mongobouncer_server_selections_total` (Counter) - Total number of MongoDB server selections
+- `mongobouncer_ismaster_commands_total` (Counter) - Total number of ismaster/hello commands processed
 
 **Endpoints:**
- - `/metrics` - Prometheus metrics endpoint
- - `/health` - Health check endpoint
+- `/metrics` - Prometheus metrics endpoint
+- `/health` - Health check endpoint
 
 ### Background & Inspiration
 

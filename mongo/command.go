@@ -31,10 +31,12 @@ const (
 	MapReduce         Command = "mapReduce"
 	Update            Command = "update"
 	BuildInfo         Command = "buildInfo"
+	AtlasVersion      Command = "atlasVersion"
+	GetParameter      Command = "getParameter"
 )
 
 var collectionCommands = []Command{Aggregate, Count, CreateIndexes, Delete, Distinct, Drop, DropIndexes, Find, FindAndModify, Insert, ListIndexes, MapReduce, Update}
-var int32Commands = []Command{AbortTransaction, Aggregate, CommitTransaction, DropDatabase, IsMaster, Ismaster, ListCollections, ListDatabases}
+var int32Commands = []Command{AbortTransaction, Aggregate, CommitTransaction, DropDatabase, IsMaster, Ismaster, ListCollections, ListDatabases, BuildInfo, AtlasVersion, GetParameter}
 var int64Commands = []Command{GetMore}
 var arrayCommands = []Command{EndSessions}
 

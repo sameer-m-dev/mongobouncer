@@ -282,11 +282,18 @@ func (c *connection) roundTrip(msg *mongo.Message, isMaster bool, tags []string)
 	// Extract database name for pool routing (needed for authentication)
 	databaseName := c.extractDatabaseName(msg.Op)
 
-	// Handle isMaster commands with authentication and mocked response
-	if isMaster {
-		// For isMaster commands, authentication logic should be based on appName content
-		// not the extracted database name (which is always "admin" for isMaster)
-		topology := description.Single
+	// Extract command for handshake detection
+	command, collection := msg.Op.CommandAndCollection()
+
+	// Handle handshake commands (isMaster, buildInfo, etc.) with authentication and mocked response
+	// Also handle aggregate commands on atlascli collection (Atlas CLI handshake)
+	// Also handle transaction commands (abortTransaction, commitTransaction) - these should be intercepted
+	if isMaster || command == mongo.BuildInfo || command == mongo.AtlasVersion || command == mongo.GetParameter ||
+		(command == mongo.Aggregate && collection == "atlascli") ||
+		command == mongo.AbortTransaction || command == mongo.CommitTransaction {
+		// For handshake commands, authentication logic should be based on appName content
+		// not the extracted database name (which is always "admin" for these commands)
+		topology := description.Sharded
 		if c.authEnabled && c.clientUsername == "" {
 			// Extract appName from the message
 			appName, err := c.extractAppNameFromMessage(msg)
@@ -362,8 +369,33 @@ func (c *connection) roundTrip(msg *mongo.Message, isMaster bool, tags []string)
 		}
 
 		requestID := msg.Op.RequestID()
-		c.log.Debug("Mocking isMaster response", zap.Int32("request_id", requestID), zap.String("topology", topology.String()))
-		// Always respond as a shard router (mongos) to emulate the behavior you described
+		c.log.Debug("Mocking handshake response", zap.Int32("request_id", requestID), zap.String("topology", topology.String()), zap.String("command", string(command)))
+
+		// Handle different handshake commands
+		if isMaster {
+			// Always respond as a shard router (mongos) to emulate the behavior you described
+			return mongo.IsMasterResponse(requestID, topology)
+		} else if command == mongo.BuildInfo {
+			// Return a buildInfo response that indicates this is mongos
+			return mongo.BuildInfoResponse(requestID)
+		} else if command == mongo.AtlasVersion {
+			// Return error for atlasVersion command (not supported in mongos)
+			return mongo.ErrorResponse(requestID, "no such command: 'atlasVersion'", "CommandNotFound")
+		} else if command == mongo.GetParameter {
+			// Return a generic response for getParameter
+			return mongo.GetParameterResponse(requestID)
+		} else if command == mongo.Aggregate && collection == "atlascli" {
+			// Return empty cursor for atlascli aggregate
+			return mongo.EmptyCursorResponse(requestID)
+		} else if command == mongo.AbortTransaction {
+			// Return success for abortTransaction
+			return mongo.TransactionResponse(requestID, "abortTransaction")
+		} else if command == mongo.CommitTransaction {
+			// Return success for commitTransaction
+			return mongo.TransactionResponse(requestID, "commitTransaction")
+		}
+
+		// For other handshake commands, return a generic mongos response
 		return mongo.IsMasterResponse(requestID, topology)
 	}
 

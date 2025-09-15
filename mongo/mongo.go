@@ -233,13 +233,17 @@ func Connect(log *zap.Logger, metrics util.MetricsInterface, opts *options.Clien
 	go topologyMonitor(log, t)
 
 	rtCtx, rtCancel := context.WithCancel(context.Background())
+	cursors := newCursorCache()
+	cursors.setMetrics(metrics)
+	cursors.setLogger(log)
+
 	m := Mongo{
 		log:             log,
 		metrics:         metrics,
 		opts:            opts,
 		client:          c,
 		topology:        t,
-		cursors:         newCursorCache(),
+		cursors:         cursors,
 		transactions:    newTransactionCache(),
 		databaseName:    databaseName,
 		roundTripCtx:    rtCtx,
@@ -499,16 +503,16 @@ func (m *Mongo) RoundTrip(msg *Message, tags []string) (_ *Message, err error) {
 		requestCommand, collection := msg.Op.CommandAndCollection()
 		transactionDetails := msg.Op.TransactionDetails()
 
-		server, err := m.selectServer(requestCursorID, collection, transactionDetails)
+		server, err := m.selectServer(requestCursorID, collection, transactionDetails, msg.Op)
 		if err != nil {
 			// Record server selection error
 			if m.metrics != nil {
-				// Extract database name from collection
+				// Extract database name from collection using proper parsing function
 				databaseName := "default"
 				if collection != "" {
-					parts := strings.SplitN(collection, ".", 2)
-					if len(parts) >= 2 {
-						databaseName = parts[0]
+					collectionInfo := util.ParseCollectionName(collection)
+					if collectionInfo.Database != "" {
+						databaseName = collectionInfo.Database
 					}
 				}
 				errorTags := []string{
@@ -531,22 +535,23 @@ func (m *Mongo) RoundTrip(msg *Message, tags []string) (_ *Message, err error) {
 			return nil, err
 		}
 
-		// Record server selection success
-		if m.metrics != nil {
-			// Extract database name from the operation
-			databaseName := "default"
-			if msg.Op != nil {
-				// Try to extract database name from the operation
-				if dbName := msg.Op.DatabaseName(); dbName != "" {
-					databaseName = dbName
-				} else if collection != "" {
-					// Fallback to collection name parsing
-					parts := strings.SplitN(collection, ".", 2)
-					if len(parts) >= 2 {
-						databaseName = parts[0]
-					}
+		// Extract database name from the operation for metrics and checkout
+		databaseName := "default"
+		if msg.Op != nil {
+			// Try to extract database name from the operation
+			if dbName := msg.Op.DatabaseName(); dbName != "" {
+				databaseName = dbName
+			} else if collection != "" {
+				// Fallback to collection name parsing using proper function
+				collectionInfo := util.ParseCollectionName(collection)
+				if collectionInfo.Database != "" {
+					databaseName = collectionInfo.Database
 				}
 			}
+		}
+
+		// Record server selection success
+		if m.metrics != nil {
 			_ = m.metrics.Incr("server_selection", []string{fmt.Sprintf("database:%s", databaseName)}, 1)
 
 			// Update pool metrics with the actual database name
@@ -554,7 +559,7 @@ func (m *Mongo) RoundTrip(msg *Message, tags []string) (_ *Message, err error) {
 			m.UpdatePoolMetricsForDatabase(databaseName)
 		}
 
-		conn, err := m.checkoutConnection(server)
+		conn, err := m.checkoutConnection(server, databaseName)
 		if err != nil {
 			// Record connection checkout error
 			if m.metrics != nil {
@@ -661,45 +666,31 @@ func (m *Mongo) RoundTrip(msg *Message, tags []string) (_ *Message, err error) {
 
 		if responseCursorID, ok := op.CursorID(); ok {
 			if responseCursorID != 0 {
-				m.cursors.add(responseCursorID, collection, server)
+				// Extract database name from collection name
+				databaseName := "default"
+				if collection != "" {
+					collectionInfo := util.ParseCollectionName(collection)
+					if collectionInfo.Database != "" {
+						databaseName = collectionInfo.Database
+					}
+				}
+
+				// If we still don't have a database name, use the Mongo instance database name
+				if databaseName == "default" && m.databaseName != "dynamic" && m.databaseName != "default" {
+					databaseName = m.databaseName
+				}
+
+				// Add cursor with database name
+				m.cursors.add(responseCursorID, collection, server, databaseName)
+
 				// Record cursor opened
 				if m.metrics != nil {
-					// Extract database name from the operation
-					databaseName := "default"
-					if msg.Op != nil {
-						// Try to extract database name from the operation
-						if dbName := msg.Op.DatabaseName(); dbName != "" {
-							databaseName = dbName
-						} else if collection != "" {
-							// Fallback to collection name parsing
-							parts := strings.SplitN(collection, ".", 2)
-							if len(parts) >= 2 {
-								databaseName = parts[0]
-							}
-						}
-					}
 					_ = m.metrics.Incr("cursor_opened", []string{fmt.Sprintf("database:%s", databaseName)}, 1)
 				}
 			} else if requestCursorID != 0 {
+				// This is a getMore operation that returned cursorID 0, meaning cursor is exhausted
 				m.cursors.remove(requestCursorID, collection)
-				// Record cursor closed
-				if m.metrics != nil {
-					// Extract database name from the operation
-					databaseName := "default"
-					if msg.Op != nil {
-						// Try to extract database name from the operation
-						if dbName := msg.Op.DatabaseName(); dbName != "" {
-							databaseName = dbName
-						} else if collection != "" {
-							// Fallback to collection name parsing
-							parts := strings.SplitN(collection, ".", 2)
-							if len(parts) >= 2 {
-								databaseName = parts[0]
-							}
-						}
-					}
-					_ = m.metrics.Incr("cursor_closed", []string{fmt.Sprintf("database:%s", databaseName)}, 1)
-				}
+				// Note: cursor_closed metric is now emitted by the cursor cache remove method
 			}
 		}
 
@@ -779,10 +770,24 @@ func (m *Mongo) isRetryableError(err error) bool {
 	return false
 }
 
-func (m *Mongo) selectServer(requestCursorID int64, collection string, transDetails *TransactionDetails) (server driver.Server, err error) {
+func (m *Mongo) selectServer(requestCursorID int64, collection string, transDetails *TransactionDetails, op Operation) (server driver.Server, err error) {
 	defer func(start time.Time) {
 		if m.metrics != nil {
-			_ = m.metrics.Timing("server_selection", time.Since(start), []string{fmt.Sprintf("success:%v", err == nil), fmt.Sprintf("database:%s", m.databaseName)}, 1)
+			// Extract actual database name from operation instead of using hardcoded m.databaseName
+			databaseName := "default"
+			if op != nil {
+				// Try to extract database name from the operation first
+				if dbName := op.DatabaseName(); dbName != "" {
+					databaseName = dbName
+				} else if collection != "" {
+					// Fallback to collection name parsing
+					parts := strings.SplitN(collection, ".", 2)
+					if len(parts) >= 2 {
+						databaseName = parts[0]
+					}
+				}
+			}
+			_ = m.metrics.Timing("server_selection", time.Since(start), []string{fmt.Sprintf("success:%v", err == nil), fmt.Sprintf("database:%s", databaseName)}, 1)
 		}
 	}(time.Now())
 
@@ -811,7 +816,7 @@ func (m *Mongo) selectServer(requestCursorID int64, collection string, transDeta
 	return m.topology.SelectServer(m.roundTripCtx, selector)
 }
 
-func (m *Mongo) checkoutConnection(server driver.Server) (conn driver.Connection, err error) {
+func (m *Mongo) checkoutConnection(server driver.Server, databaseName string) (conn driver.Connection, err error) {
 	defer func(start time.Time) {
 		addr := ""
 		if conn != nil {
@@ -821,7 +826,7 @@ func (m *Mongo) checkoutConnection(server driver.Server) (conn driver.Connection
 			_ = m.metrics.Timing("checkout_connection", time.Since(start), []string{
 				fmt.Sprintf("address:%s", addr),
 				fmt.Sprintf("success:%v", err == nil),
-				fmt.Sprintf("database:%s", m.databaseName),
+				fmt.Sprintf("database:%s", databaseName),
 			}, 1)
 		}
 	}(time.Now())

@@ -87,3 +87,138 @@ func isMasterDocument(kind description.TopologyKind) (bsoncore.Document, error) 
 	}
 	return bson.Marshal(doc)
 }
+
+// BuildInfoResponse creates a buildInfo response that indicates this is mongos
+func BuildInfoResponse(responseTo int32) (*Message, error) {
+	doc := bson.D{
+		{Key: "ismaster", Value: true},
+		{Key: "msg", Value: "isdbgrid"},
+		{Key: "maxBsonObjectSize", Value: 16777216},
+		{Key: "maxMessageSizeBytes", Value: 48000000},
+		{Key: "maxWriteBatchSize", Value: 100000},
+		{Key: "localTime", Value: bson.D{{Key: "$date", Value: time.Now().UnixNano() / 1e6}}},
+		{Key: "logicalSessionTimeoutMinutes", Value: 30},
+		{Key: "minWireVersion", Value: 0},
+		{Key: "maxWireVersion", Value: 25},
+		{Key: "ok", Value: 1.0},
+	}
+
+	docBytes, err := bson.Marshal(doc)
+	if err != nil {
+		return nil, err
+	}
+
+	reply := opReply{
+		flags:       resultFlagAwaitCapable,
+		numReturned: 1,
+		documents:   []bsoncore.Document{docBytes},
+	}
+	wm := reply.Encode(responseTo)
+	return &Message{
+		Wm: wm,
+		Op: &reply,
+	}, nil
+}
+
+// ErrorResponse creates an error response
+func ErrorResponse(responseTo int32, errmsg, codeName string) (*Message, error) {
+	doc := bson.D{
+		{Key: "ok", Value: 0.0},
+		{Key: "errmsg", Value: errmsg},
+		{Key: "code", Value: 59}, // CommandNotFound
+		{Key: "codeName", Value: codeName},
+	}
+
+	docBytes, err := bson.Marshal(doc)
+	if err != nil {
+		return nil, err
+	}
+
+	reply := opReply{
+		flags:       0,
+		numReturned: 1,
+		documents:   []bsoncore.Document{docBytes},
+	}
+	wm := reply.Encode(responseTo)
+	return &Message{
+		Wm: wm,
+		Op: &reply,
+	}, nil
+}
+
+// GetParameterResponse creates a getParameter response
+func GetParameterResponse(responseTo int32) (*Message, error) {
+	doc := bson.D{
+		{Key: "featureCompatibilityVersion", Value: bson.D{
+			{Key: "version", Value: "6.0"},
+		}},
+		{Key: "ok", Value: 1.0},
+	}
+
+	docBytes, err := bson.Marshal(doc)
+	if err != nil {
+		return nil, err
+	}
+
+	reply := opReply{
+		flags:       resultFlagAwaitCapable,
+		numReturned: 1,
+		documents:   []bsoncore.Document{docBytes},
+	}
+	wm := reply.Encode(responseTo)
+	return &Message{
+		Wm: wm,
+		Op: &reply,
+	}, nil
+}
+
+// EmptyCursorResponse creates an empty cursor response
+func EmptyCursorResponse(responseTo int32) (*Message, error) {
+	doc := bson.D{
+		{Key: "cursor", Value: bson.D{
+			{Key: "firstBatch", Value: bson.A{}},
+			{Key: "id", Value: int64(0)},
+			{Key: "ns", Value: "admin.atlascli"},
+		}},
+		{Key: "ok", Value: 1.0},
+	}
+
+	docBytes, err := bson.Marshal(doc)
+	if err != nil {
+		return nil, err
+	}
+
+	reply := opReply{
+		flags:       resultFlagAwaitCapable,
+		numReturned: 1,
+		documents:   []bsoncore.Document{docBytes},
+	}
+	wm := reply.Encode(responseTo)
+	return &Message{
+		Wm: wm,
+		Op: &reply,
+	}, nil
+}
+
+// TransactionResponse creates a transaction response (abortTransaction or commitTransaction)
+func TransactionResponse(responseTo int32, transactionType string) (*Message, error) {
+	doc := bson.D{
+		{Key: "ok", Value: 1.0},
+	}
+
+	docBytes, err := bson.Marshal(doc)
+	if err != nil {
+		return nil, err
+	}
+
+	reply := opReply{
+		flags:       resultFlagAwaitCapable,
+		numReturned: 1,
+		documents:   []bsoncore.Document{docBytes},
+	}
+	wm := reply.Encode(responseTo)
+	return &Message{
+		Wm: wm,
+		Op: &reply,
+	}, nil
+}

@@ -198,7 +198,6 @@ func (m *Manager) RegisterClient(clientID, username, database string, poolMode P
 
 	// Update client connections metric
 	if m.metrics != nil {
-		_ = m.metrics.Gauge("client_connections", float64(len(m.activeClients)), []string{"state:active"}, 1)
 		_ = m.metrics.Incr("connection_opened", []string{}, 1)
 	}
 
@@ -238,7 +237,6 @@ func (m *Manager) UnregisterClient(clientID string) {
 
 	// Update client connections metric
 	if m.metrics != nil {
-		_ = m.metrics.Gauge("client_connections", float64(len(m.activeClients)), []string{"state:active"}, 1)
 		_ = m.metrics.Incr("connection_closed", []string{}, 1)
 	}
 }
