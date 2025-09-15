@@ -193,12 +193,6 @@ helm install mongobouncer ./deploy/helm/mongobouncer
 - **Sharded Clusters**: Distributed MongoDB with `mongos` routing
 - **Mixed Environments**: Simultaneous connections to different topology types
 
-### Limitations
-
-**Current Limitations:**
-- ❌ **Multi-Document Transactions**: MongoDB transactions (`startTransaction`, `commitTransaction`, `abortTransaction`) are not fully supported. For applications requiring transaction support, consider using direct MongoDB connections or implementing application-level transaction management
-- ⚠️ **Authentication Methods**: Currently only supports authentication via `appName` parameter in connection strings. Traditional MongoDB authentication methods (username/password in connection string, SASL, etc.) are not supported. Read more about the authentication system [here](./AUTHENTICATION.md).
-
 ### Authentication
 
 MongoBouncer implements a unique proxy-level authentication system that leverages MongoDB's `isMaster` handshake mechanism. This approach provides secure authentication without the complexity of traditional SASL authentication.
@@ -289,6 +283,12 @@ For detailed information about the authentication system, implementation details
 **Endpoints:**
 - `/metrics` - Prometheus metrics endpoint
 - `/health` - Health check endpoint
+
+### Limitations
+
+**Current Limitations:**
+- ❌ **Multi-Document Transactions**: MongoDB transactions (`startTransaction`, `commitTransaction`, `abortTransaction`) are not fully supported. For applications requiring transaction support, consider using direct MongoDB connections or implementing application-level transaction management
+- ⚠️ **Authentication Methods**: Currently only supports authentication via `appName` parameter in connection strings. Traditional MongoDB authentication methods (username/password in connection string, SASL, etc.) are not supported. Read more about the authentication system [here](./docs/AUTHENTICATION.md).
 
 ### Background & Inspiration
 
