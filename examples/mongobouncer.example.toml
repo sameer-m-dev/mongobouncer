@@ -1,5 +1,5 @@
 # MongoBouncer Configuration File
-# MongoDB Connection Bouncer - pgBouncer equivalent for MongoDB
+# MongoBouncer - Lightweight connection pooler for MongoDB
 # This configuration provides comprehensive settings for production deployments
 
 [mongobouncer]
@@ -106,7 +106,6 @@ pool_mode = "statement"
 [databases."*"]
 connection_string = "mongodb://${DEFAULT_MONGO_HOST:-localhost}:27017/default"
 max_pool_size = 20
-max_db_connections = 40
 
 # =====================================
 # Environment Variable Examples

@@ -19,60 +19,90 @@ image:
 app:
   # MongoBouncer configuration
   config:
-    # Server settings
+    # =====================================
+    # Network & Server Settings
+    # =====================================
     listenAddr: "0.0.0.0"
     listenPort: 27017
-    logLevel: "info"
-    verbose: false
 
-    # Connection management
-    poolMode: "session" # session, statement, transaction
-    minPoolSize: 5
-    maxPoolSize: 10
-    maxClientConn: 100
+    # =====================================
+    # Logging & Debugging
+    # =====================================
+    logLevel: "info" # debug, info, warn, error
+    logfile: "" # Empty means stdout, or specify path: "/var/log/mongobouncer.log"
 
-    # TLS configuration
-    tls:
-      enabled: false
-      certFile: "/etc/tls/tls.crt"
-      keyFile: "/etc/tls/tls.key"
-      caFile: "/etc/tls/ca.crt"
-      verifyClient: false
+    # =====================================
+    # Connection Pooling & Performance
+    # =====================================
+    poolMode: "statement" # session, transaction, statement
+    maxPoolSize: 10 # MongoDB driver's internal pool size
+    minPoolSize: 1 # MongoDB driver's minimum pool size
+    maxClientConn: 0 # Maximum client connections (0 = unlimited)
+    maxConnIdleTime: "30s" # How long to keep idle connections
+    serverSelectionTimeout: "5s" # Server selection timeout
+    connectTimeout: "5s" # Connection establishment timeout
+    socketTimeout: "30s" # Socket operation timeout
+    heartbeatInterval: "10s" # Heartbeat frequency
+    retryWrites: true # Enable retryable writes (default for replica sets)
+    authEnabled: false # Enable authentication on the proxy level
+    regexCredentialPassthrough: false # Use credentials passed in appName as well as the passed authSource for regex matched/wildcard match databases in downstream connections
+    topology: "sharded" # The topology of the upstream MongoDB cluster. Ex: sharded, single, loadBalanced
+    ping: true
 
-    # MongoDB-specific settings
-    mongodb:
-      defaultReadPreference: "primary"
-      defaultWriteConcern: "majority"
-      defaultReadConcern: "local"
-      maxBsonObjectSize: 16777216
-      enableRetryableWrites: true
-      enableRetryableReads: true
-
-    # Performance tuning
-    performance:
-      tcpKeepalive: true
-      tcpKeepaliveIdle: 600
-      tcpKeepaliveInterval: 30
-      tcpKeepaliveCount: 3
-      listenBacklog: 128
-      maxPacketSize: 16777216
+    # =====================================
+    # Network Settings
+    # =====================================
+    network: "tcp4" # tcp4, tcp6, unix
+    unlink: false # Remove unix socket file on exit
 
   # Database connections - these should be configured per environment
   databases:
-    {}
-    # Example:
-    # app_db:
-    #   connectionString: "mongodb://mongo-cluster:27017/app"
-    #   maxConnections: 50
-    #   poolMode: "session"
-    # analytics:
-    #   connectionString: "mongodb://analytics-cluster:27017/analytics"
-    #   maxConnections: 25
+    # Example configurations:
+    #
+    # Example 1: Production MongoDB Atlas cluster (connection string)
+    # production_app:
+    #   connectionString: "mongodb+srv://${PROD_USER}:${PROD_PASS}@production-cluster.mongodb.net/myapp?retryWrites=true&w=majority&maxPoolSize=100&minPoolSize=10"
+    #
+    # Example 2: Analytics database (individual settings)
+    "*":
+      connectionString: "mongodb://root:Ma%401Ah%232Sr%242025@10.41.48.55:27017,10.41.48.54:27017,10.41.48.56:27017/admin?retryWrites=true&w=majority"
+      maxPoolSize: 10
+      minPoolSize: 1
+      socketTimeout: "60s"
+    #
+    # Example 3: Local development database (using individual fields)
+    # local_dev:
+    #   host: "localhost"
+    #   port: 27017
+    #   dbname: "development"
+    #   maxPoolSize: 10
+    #   minPoolSize: 2
+    #
+    # Example 4: Another database using individual fields
+    # test_db:
+    #   host: "localhost"
+    #   port: 27019
+    #   dbname: "test_database"
+    #   user: "testuser"
+    #   password: "testpass"
+    #   maxPoolSize: 15
+    #   minPoolSize: 5
+    #   socketTimeout: "60s"
+    #
+    # Example 5: Wildcard database patterns (using quotes for special characters)
+    # "analytics_*":
+    #   connectionString: "mongodb://analytics-cluster.mongodb.net:27017/analytics"
+    #   maxPoolSize: 30
     #   poolMode: "statement"
-    #   readPreference: "secondary"
+    #
+    # Catch-all wildcard: matches any database not matched above
+    # "*":
+    #   connectionString: "mongodb://${DEFAULT_MONGO_HOST:-localhost}:27017/default"
+    #   maxPoolSize: 20
+    #   maxDbConnections: 40
 
 # Deployment configuration
-replicaCount: 2
+replicaCount: 1
 
 # Resource configuration
 resources:
@@ -140,27 +170,12 @@ podDisruptionBudget:
   minAvailable: 1
   # maxUnavailable: 50%
 
-# Network policy
-networkPolicy:
-  enabled: false
-  # Additional ingress rules
-  ingress: []
-  # Additional egress rules
-  egress: []
-
-# Ingress configuration (not typically used for MongoDB proxy)
-ingress:
-  enabled: false
-  className: ""
-  annotations: {}
-  hosts: []
-  tls: []
-
 # Monitoring configuration
 monitoring:
   # Prometheus metrics
   prometheus:
     enabled: true
+    address: "0.0.0.0:9090" # Metrics server address
     port: 9090
     path: "/metrics"
     interval: "30s"
@@ -171,20 +186,6 @@ monitoring:
     namespace: ""
     additionalLabels: {}
     annotations: {}
-
-  # Health check endpoint
-  healthCheck:
-    enabled: true
-    path: "/health"
-    port: 8080
-
-# Persistence (for logs or temporary files)
-persistence:
-  enabled: false
-  # storageClassName: ""
-  accessMode: ReadWriteOnce
-  size: 1Gi
-  # existingClaim: ""
 
 # Extra environment variables
 extraEnvVars:
@@ -226,7 +227,7 @@ lifecycle:
 livenessProbe:
   enabled: true
   initialDelaySeconds: 30
-  periodSeconds: 10
+  periodSeconds: 30
   timeoutSeconds: 5
   successThreshold: 1
   failureThreshold: 5
@@ -235,7 +236,7 @@ livenessProbe:
 readinessProbe:
   enabled: true
   initialDelaySeconds: 5
-  periodSeconds: 10
+  periodSeconds: 30
   timeoutSeconds: 5
   successThreshold: 1
   failureThreshold: 3

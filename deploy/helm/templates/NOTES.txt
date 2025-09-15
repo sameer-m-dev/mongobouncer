@@ -41,17 +41,6 @@ Prometheus Metrics:
 {{- end }}
 {{- end }}
 
-{{- if .Values.monitoring.healthCheck.enabled }}
-
-Health Check:
-{{- if eq .Values.service.type "ClusterIP" }}
-  kubectl --namespace {{ .Release.Namespace }} port-forward svc/{{ include "mongobouncer.fullname" . }} {{ .Values.monitoring.healthCheck.port }}:{{ .Values.monitoring.healthCheck.port }}
-  curl http://localhost:{{ .Values.monitoring.healthCheck.port }}{{ .Values.monitoring.healthCheck.path }}
-{{- else }}
-  curl http://$SERVICE_IP:{{ .Values.monitoring.healthCheck.port }}{{ .Values.monitoring.healthCheck.path }}
-{{- end }}
-{{- end }}
-
 4. View logs:
   kubectl logs --namespace {{ .Release.Namespace }} -l "{{ include "mongobouncer.selectorLabels" . }}" -f
 

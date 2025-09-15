@@ -152,11 +152,6 @@ Generate container ports
   containerPort: {{ .Values.monitoring.prometheus.port }}
   protocol: TCP
 {{- end }}
-{{- if .Values.monitoring.healthCheck.enabled }}
-- name: health
-  containerPort: {{ .Values.monitoring.healthCheck.port }}
-  protocol: TCP
-{{- end }}
 {{- end }}
 
 {{/*
@@ -171,12 +166,6 @@ Generate service ports
 - name: metrics
   port: {{ .Values.monitoring.prometheus.port }}
   targetPort: metrics
-  protocol: TCP
-{{- end }}
-{{- if .Values.monitoring.healthCheck.enabled }}
-- name: health
-  port: {{ .Values.monitoring.healthCheck.port }}
-  targetPort: health
   protocol: TCP
 {{- end }}
 {{- end }}

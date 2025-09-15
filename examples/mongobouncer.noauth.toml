@@ -1,5 +1,5 @@
 # MongoBouncer Configuration File - No Authentication Setup
-# MongoDB Connection Bouncer - pgBouncer equivalent for MongoDB
+# MongoBouncer - Lightweight connection pooler for MongoDB
 # This configuration is designed for testing and development without authentication
 
 [mongobouncer]

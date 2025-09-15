@@ -35,7 +35,6 @@ type Database struct {
 	MaxConnections   int    `toml:"max_connections"`
 	PoolMode         string `toml:"pool_mode"`
 	PoolSize         int    `toml:"pool_size"`
-	MaxDBConnections int    `toml:"max_db_connections"`
 	Label            string `toml:"label"`
 
 	// MongoDB client pool overrides (optional) - using shared config
@@ -92,7 +91,7 @@ func LoadConfig(configPath string, verbose bool) (*Config, error) {
 			Network:                    "tcp4",
 			PoolMode:                   "session",
 			MaxClientConn:              100,
-			MetricsAddress:             "localhost:9090",
+			MetricsAddress:             "0.0.0.0:9090",
 			MetricsEnabled:             true,
 			AuthEnabled:                true,
 			RegexCredentialPassthrough: true,
@@ -580,9 +579,6 @@ func (c *Config) GetDatabases() map[string]Database {
 			}
 			if poolsize, ok := v["pool_size"].(int64); ok {
 				db.PoolSize = int(poolsize)
-			}
-			if maxdbconn, ok := v["max_db_connections"].(int64); ok {
-				db.MaxDBConnections = int(maxdbconn)
 			}
 			if label, ok := v["label"].(string); ok {
 				db.Label = label

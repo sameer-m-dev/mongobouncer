@@ -26,13 +26,6 @@ spec:
           
           echo "✓ MongoDB connection through MongoBouncer successful"
           
-          {{- if .Values.monitoring.healthCheck.enabled }}
-          # Test health check endpoint
-          echo "Testing health check endpoint..."
-          curl -f http://{{ include "mongobouncer.fullname" . }}.{{ .Release.Namespace }}.svc.cluster.local:{{ .Values.monitoring.healthCheck.port }}{{ .Values.monitoring.healthCheck.path }}
-          echo "✓ Health check endpoint successful"
-          {{- end }}
-          
           {{- if .Values.monitoring.prometheus.enabled }}
           # Test metrics endpoint
           echo "Testing Prometheus metrics endpoint..."

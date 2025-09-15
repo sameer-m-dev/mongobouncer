@@ -70,7 +70,7 @@ spec:
           args:
             - "-config"
             - "/etc/mongobouncer/mongobouncer.toml"
-            {{- if .Values.app.config.verbose }}
+            {{- if eq .Values.app.config.logLevel "debug" }}
             - "-verbose"
             {{- end }}
           {{- with .Values.lifecycle }}
@@ -80,8 +80,8 @@ spec:
           {{- if .Values.livenessProbe.enabled }}
           livenessProbe:
             httpGet:
-              path: {{ .Values.monitoring.healthCheck.path | default "/health" }}
-              port: health
+              path: /health
+              port: metrics
             initialDelaySeconds: {{ .Values.livenessProbe.initialDelaySeconds }}
             periodSeconds: {{ .Values.livenessProbe.periodSeconds }}
             timeoutSeconds: {{ .Values.livenessProbe.timeoutSeconds }}
@@ -91,8 +91,8 @@ spec:
           {{- if .Values.readinessProbe.enabled }}
           readinessProbe:
             httpGet:
-              path: {{ .Values.monitoring.healthCheck.path | default "/health" }}
-              port: health
+              path: /health
+              port: metrics
             initialDelaySeconds: {{ .Values.readinessProbe.initialDelaySeconds }}
             periodSeconds: {{ .Values.readinessProbe.periodSeconds }}
             timeoutSeconds: {{ .Values.readinessProbe.timeoutSeconds }}
@@ -102,8 +102,8 @@ spec:
           {{- if .Values.startupProbe.enabled }}
           startupProbe:
             httpGet:
-              path: {{ .Values.monitoring.healthCheck.path | default "/health" }}
-              port: health
+              path: /health
+              port: metrics
             initialDelaySeconds: {{ .Values.startupProbe.initialDelaySeconds }}
             periodSeconds: {{ .Values.startupProbe.periodSeconds }}
             timeoutSeconds: {{ .Values.startupProbe.timeoutSeconds }}
@@ -118,18 +118,6 @@ spec:
             - name: config
               mountPath: /etc/mongobouncer
               readOnly: true
-            {{- if .Values.app.config.tls.enabled }}
-            - name: tls-certs
-              mountPath: /etc/tls
-              readOnly: true
-            {{- end }}
-            {{- if .Values.persistence.enabled }}
-            - name: data
-              mountPath: /data
-            {{- end }}
-            {{- with .Values.extraVolumeMounts }}
-            {{- toYaml . | nindent 12 }}
-            {{- end }}
         {{- with .Values.sidecars }}
         {{- toYaml . | nindent 8 }}
         {{- end }}
@@ -137,19 +125,6 @@ spec:
         - name: config
           configMap:
             name: {{ include "mongobouncer.configName" . }}
-        {{- if .Values.app.config.tls.enabled }}
-        - name: tls-certs
-          secret:
-            secretName: {{ include "mongobouncer.secretName" . }}-tls
-        {{- end }}
-        {{- if .Values.persistence.enabled }}
-        - name: data
-          persistentVolumeClaim:
-            claimName: {{ .Values.persistence.existingClaim | default (include "mongobouncer.fullname" .) }}
-        {{- end }}
-        {{- with .Values.extraVolumes }}
-        {{- toYaml . | nindent 8 }}
-        {{- end }}
       {{- with .Values.nodeSelector }}
       nodeSelector:
         {{- toYaml . | nindent 8 }}

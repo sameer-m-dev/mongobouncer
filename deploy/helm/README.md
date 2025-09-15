@@ -2,7 +2,7 @@
 
 ![Version: 0.1.0](https://img.shields.io/badge/Version-0.1.0-informational?style=flat-square) ![Type: application](https://img.shields.io/badge/Type-application-informational?style=flat-square) ![AppVersion: 1.0.0](https://img.shields.io/badge/AppVersion-1.0.0-informational?style=flat-square)
 
-Complete deployment and configuration guide for MongoBouncer - A MongoDB connection pooling proxy that acts as the pgbouncer equivalent for MongoDB.
+Complete deployment and configuration guide for MongoBouncer - Lightweight connection pooler for MongoDB.
 
 ## Overview
 
@@ -66,10 +66,10 @@ curl https://raw.githubusercontent.com/helm/helm/master/scripts/get-helm-3 | bas
 cd deploy/helm/
 
 # Install with default configuration
-helm install mongobouncer . --namespace mongobouncer-system --create-namespace
+helm upgrade --namespace mongobouncer-system --create-namespace --install mongobouncer .
 
 # Or install with custom values
-helm install mongobouncer . -f your-values.yaml --namespace mongobouncer-system --create-namespace
+helm upgrade --namespace mongobouncer-system --create-namespace -f your-values.yaml --install mongobouncer .
 ```
 
 ### 3. Test the Deployment
