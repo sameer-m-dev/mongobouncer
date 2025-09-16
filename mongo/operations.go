@@ -22,6 +22,7 @@ type TransactionDetails struct {
 	LsID               []byte
 	TxnNumber          int64
 	IsStartTransaction bool
+	Autocommit         bool
 }
 
 type Operation interface {
@@ -473,7 +474,7 @@ func (m *opMsg) TransactionDetails() *TransactionDetails {
 				continue
 			}
 
-			_, ok = single.msg.Lookup("autocommit").BooleanOK()
+			autocommit, ok := single.msg.Lookup("autocommit").BooleanOK()
 			if !ok {
 				continue
 			}
@@ -483,6 +484,7 @@ func (m *opMsg) TransactionDetails() *TransactionDetails {
 				LsID:               lsID,
 				TxnNumber:          txnNumber,
 				IsStartTransaction: ok && startTransaction,
+				Autocommit:         autocommit,
 			}
 		}
 	}

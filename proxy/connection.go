@@ -287,10 +287,9 @@ func (c *connection) roundTrip(msg *mongo.Message, isMaster bool, tags []string)
 
 	// Handle handshake commands (isMaster, buildInfo, etc.) with authentication and mocked response
 	// Also handle aggregate commands on atlascli collection (Atlas CLI handshake)
-	// Also handle transaction commands (abortTransaction, commitTransaction) - these should be intercepted
+	// Also handle transaction commands (abortTransaction, commitTransaction) - these should be forwarded to MongoDB
 	if isMaster || command == mongo.BuildInfo || command == mongo.AtlasVersion || command == mongo.GetParameter ||
-		(command == mongo.Aggregate && collection == "atlascli") ||
-		command == mongo.AbortTransaction || command == mongo.CommitTransaction {
+		(command == mongo.Aggregate && collection == "atlascli") {
 		// For handshake commands, authentication logic should be based on appName content
 		// not the extracted database name (which is always "admin" for these commands)
 		topology := description.Sharded
@@ -387,12 +386,6 @@ func (c *connection) roundTrip(msg *mongo.Message, isMaster bool, tags []string)
 		} else if command == mongo.Aggregate && collection == "atlascli" {
 			// Return empty cursor for atlascli aggregate
 			return mongo.EmptyCursorResponse(requestID)
-		} else if command == mongo.AbortTransaction {
-			// Return success for abortTransaction
-			return mongo.TransactionResponse(requestID, "abortTransaction")
-		} else if command == mongo.CommitTransaction {
-			// Return success for commitTransaction
-			return mongo.TransactionResponse(requestID, "commitTransaction")
 		}
 
 		// For other handshake commands, return a generic mongos response
@@ -501,8 +494,16 @@ func (c *connection) roundTripWithPool(msg *mongo.Message, databaseName string, 
 		}
 	}
 
+	// Check if this operation has transaction details
+	transactionDetails := msg.Op.TransactionDetails()
+	isTransaction := transactionDetails != nil && !transactionDetails.Autocommit
+	transactionID := ""
+	if transactionDetails != nil {
+		transactionID = fmt.Sprintf("%x-%d", transactionDetails.LsID, transactionDetails.TxnNumber)
+	}
+
 	// Get connection from pool (client is now registered with correct database)
-	pooledConn, err := c.poolManager.GetConnection(c.clientID, actualDatabaseName, mongoClient, false, "")
+	pooledConn, err := c.poolManager.GetConnection(c.clientID, actualDatabaseName, mongoClient, isTransaction, transactionID)
 	if err != nil {
 		c.log.Warn("Failed to get connection from pool", zap.Error(err))
 		// Return error instead of falling back to direct client usage
@@ -527,10 +528,6 @@ func (c *connection) roundTripWithPool(msg *mongo.Message, databaseName string, 
 
 // isEndOfTransaction determines if an operation marks the end of a transaction
 func (c *connection) isEndOfTransaction(op mongo.Operation) bool {
-	// For statement mode, every operation ends the transaction (connection should be returned)
-	// For transaction mode, only specific operations end transactions
-	// For session mode, connections are never returned until session ends
-
 	// Get the command to determine transaction state
 	command, _ := op.CommandAndCollection()
 	commandStr := string(command)
@@ -539,11 +536,25 @@ func (c *connection) isEndOfTransaction(op mongo.Operation) bool {
 	transactionEndCommands := []string{
 		"commitTransaction",
 		"abortTransaction",
-		"endSession",
+		"endSessions",
 	}
 
 	for _, endCmd := range transactionEndCommands {
 		if commandStr == endCmd {
+			return true
+		}
+	}
+
+	// Check if this is a transaction operation that's ending
+	transactionDetails := op.TransactionDetails()
+	if transactionDetails != nil {
+		// If autocommit is true, this operation ends the transaction
+		if transactionDetails.Autocommit {
+			return true
+		}
+
+		// If this is a commit or abort command, it ends the transaction
+		if commandStr == "commitTransaction" || commandStr == "abortTransaction" {
 			return true
 		}
 	}

@@ -5,11 +5,11 @@
 listen_addr = "0.0.0.0"
 listen_port = 27017
 log_level = "debug"
-pool_mode = "session"
-max_client_conn = 100
+pool_mode = "statement"
+max_client_conn = 0
 metrics_enabled = true
 metrics_address = "localhost:9090"
-auth_enabled = true
+auth_enabled = false
 
 # MongoDB 6 Replica Set Configuration
 [databases.app_prod_rs6]
@@ -38,6 +38,8 @@ connection_string = "mongodb://appuser_rs8:apppass_rs8_123@host.docker.internal:
 # Analytics database on MongoDB 6 replica set (using analytics auth source)
 [databases.analytics_rs6]
 connection_string = "mongodb://analytics_rs6:analytics_rs6_123@host.docker.internal:27018/analytics_rs6?replicaSet=rs0&authSource=analytics_rs6"
+max_pool_size = 5
+min_pool_size = 1
 
 # Analytics database on MongoDB 8 replica set (using analytics auth source)
 [databases.analytics_rs8]
@@ -61,4 +63,7 @@ connection_string = "mongodb://analytics_s8:analytics_s8_123@host.docker.interna
 
 # Admin database routing - MongoDB 8 RS (port 27019)
 [databases.admin]
-connection_string = "mongodb://admin:admin123@host.docker.internal:27019/admin?authSource=admin"
+connection_string = "mongodb://admin:admin123@host.docker.internal:27018/admin?authSource=admin"
+
+[databases.testdb]
+connection_string = "mongodb://admin:admin123@host.docker.internal:27018/testdb?replicaSet=rs0&authSource=admin"

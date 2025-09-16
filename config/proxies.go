@@ -14,6 +14,9 @@ import (
 // Proxies creates proxy instances from the configuration
 func (c *Config) Proxies(log *zap.Logger) ([]*proxy.Proxy, error) {
 
+	// Create global session manager that will be shared across all database handlers
+	globalSessionManager := mongo.NewSessionManager(log)
+
 	// Create database router for wildcard database support
 	databaseRouter := proxy.NewDatabaseRouter(log)
 
@@ -28,7 +31,7 @@ func (c *Config) Proxies(log *zap.Logger) ([]*proxy.Proxy, error) {
 			opts := options.Client().ApplyURI(dbConfig.ConnectionString)
 			// Apply MongoDB client pool settings from config
 			opts = c.ApplyMongoDBClientSettings(opts, dbName, &dbConfig)
-			mongoClient, err = mongo.Connect(log, c.metrics, opts, c.ping)
+			mongoClient, err = mongo.ConnectWithSessionManager(log, c.metrics, opts, c.ping, globalSessionManager)
 			if err != nil {
 				return nil, fmt.Errorf("failed to connect to database %s: %v", dbName, err)
 			}
@@ -38,7 +41,7 @@ func (c *Config) Proxies(log *zap.Logger) ([]*proxy.Proxy, error) {
 			opts := options.Client().ApplyURI(connectionString)
 			// Apply MongoDB client pool settings from config
 			opts = c.ApplyMongoDBClientSettings(opts, dbName, &dbConfig)
-			mongoClient, err = mongo.Connect(log, c.metrics, opts, c.ping)
+			mongoClient, err = mongo.ConnectWithSessionManager(log, c.metrics, opts, c.ping, globalSessionManager)
 			if err != nil {
 				return nil, fmt.Errorf("failed to connect to database %s: %v", dbName, err)
 			}
