@@ -64,11 +64,9 @@ app:
     #   connectionString: "mongodb+srv://${PROD_USER}:${PROD_PASS}@production-cluster.mongodb.net/myapp?retryWrites=true&w=majority&maxPoolSize=100&minPoolSize=10"
     #
     # Example 2: Analytics database (individual settings)
-    "*":
-      connectionString: "mongodb://root:Ma%401Ah%232Sr%242025@10.41.48.55:27017,10.41.48.54:27017,10.41.48.56:27017/admin?retryWrites=true&w=majority"
-      maxPoolSize: 10
-      minPoolSize: 1
-      socketTimeout: "60s"
+    # analytics:
+    #   connectionString: "mongodb://analytics-cluster:27017/analytics"
+    #   minPoolSize: 25
     #
     # Example 3: Local development database (using individual fields)
     # local_dev:
