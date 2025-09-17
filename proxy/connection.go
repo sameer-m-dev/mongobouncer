@@ -43,13 +43,15 @@ type connection struct {
 	regexCredentialPassthrough bool   // Whether to use client credentials for wildcard/regex matches
 
 	// MongoDB client settings for dynamic client creation
-	mongodbDefaults util.MongoDBClientConfig // Default MongoDB client settings
+	mongodbDefaults      util.MongoDBClientConfig // Default MongoDB client settings
+	globalSessionManager *mongo.SessionManager    // Global session manager for shared session management
+	proxy                *Proxy                   // Reference to proxy for client registration
 
 	// Database usage tracking
 	databaseUsed string // The actual database that was used during this connection
 }
 
-func handleConnection(log *zap.Logger, metrics util.MetricsInterface, address string, conn net.Conn, poolManager *pool.Manager, kill chan interface{}, databaseRouter *DatabaseRouter, authEnabled bool, regexCredentialPassthrough bool, mongodbDefaults util.MongoDBClientConfig) string {
+func handleConnection(log *zap.Logger, metrics util.MetricsInterface, address string, conn net.Conn, poolManager *pool.Manager, kill chan interface{}, databaseRouter *DatabaseRouter, authEnabled bool, regexCredentialPassthrough bool, mongodbDefaults util.MongoDBClientConfig, globalSessionManager *mongo.SessionManager, proxy *Proxy) string {
 	defer func() {
 		if r := recover(); r != nil {
 			log.Error("Connection crashed", zap.String("panic", fmt.Sprintf("%v", r)), zap.String("stack", string(debug.Stack())))
@@ -73,6 +75,8 @@ func handleConnection(log *zap.Logger, metrics util.MetricsInterface, address st
 		authEnabled:                authEnabled,
 		regexCredentialPassthrough: regexCredentialPassthrough,
 		mongodbDefaults:            mongodbDefaults,
+		globalSessionManager:       globalSessionManager,
+		proxy:                      proxy,
 	}
 
 	// Extract target database from the client's connection string for smart admin routing
@@ -397,12 +401,16 @@ func (c *connection) roundTrip(msg *mongo.Message, isMaster bool, tags []string)
 
 	// Get MongoDB client using simplified routing
 	var mongoClient *mongo.Mongo
+	var route *RouteConfig
+	var targetDatabase string
+
 	if c.databaseRouter != nil {
 		// Simple routing: use the database name directly
-		targetDatabase := databaseName
+		targetDatabase = databaseName
 
 		// Get route for the target database
-		route, err := c.databaseRouter.GetRoute(targetDatabase)
+		var err error
+		route, err = c.databaseRouter.GetRoute(targetDatabase)
 		if err != nil {
 			// If admin database is not configured but admin command is attempted, reject with proper error
 			if targetDatabase == "admin" {
@@ -424,8 +432,7 @@ func (c *connection) roundTrip(msg *mongo.Message, isMaster bool, tags []string)
 				zap.String("current_operation_db", databaseName))
 		}
 
-		// For wildcard/regex matches with credential passthrough, create a new MongoDB client
-		// with the client's credentials instead of using the route's MongoDB client
+		// Check if we need to create a MongoDB client lazily or recreate a failed one
 		if c.regexCredentialPassthrough && c.isWildcardOrRegexMatch(targetDatabase, route) && c.clientUsername != "" {
 			c.log.Debug("Using credential passthrough for MongoDB client creation",
 				zap.String("username", c.clientUsername),
@@ -438,8 +445,19 @@ func (c *connection) roundTrip(msg *mongo.Message, isMaster bool, tags []string)
 				return nil, fmt.Errorf("failed to create MongoDB client with client credentials: %v", err)
 			}
 			mongoClient = clientWithCredentials
+		} else if route.MongoClient == nil {
+			c.log.Debug("MongoDB client is nil, creating lazily",
+				zap.String("target_database", targetDatabase))
+
+			// Create MongoDB client lazily
+			lazyClient, err := c.createLazyMongoClient(route, targetDatabase)
+			if err != nil {
+				c.log.Error("Failed to create lazy MongoDB client", zap.Error(err))
+				return nil, fmt.Errorf("failed to create MongoDB client: %v", err)
+			}
+			mongoClient = lazyClient
 		} else {
-			// Use the route's MongoDB client for exact matches or when credential passthrough is disabled
+			// Use the existing route's MongoDB client
 			mongoClient = route.MongoClient
 		}
 	} else {
@@ -448,11 +466,34 @@ func (c *connection) roundTrip(msg *mongo.Message, isMaster bool, tags []string)
 
 	// Use pool manager for connection pooling, fallback to direct client if needed
 	if c.poolManager != nil {
-		return c.roundTripWithPool(msg, databaseName, mongoClient, tags)
+		result, err := c.roundTripWithPool(msg, databaseName, mongoClient, tags)
+		// If the operation failed due to connection issues, try to recreate the client
+		if err != nil && c.isConnectionError(err) && route != nil && route.MongoClient != nil {
+			c.log.Warn("Connection error detected, attempting to recreate MongoDB client",
+				zap.String("target_database", targetDatabase),
+				zap.Error(err))
+
+			// Mark the route's client as nil to force recreation on next request
+			route.MongoClient = nil
+		}
+		return result, err
 	}
 
 	// Fallback to direct client usage
-	return mongoClient.RoundTrip(msg, tags)
+	c.log.Warn("Fallback to direct client usage", zap.String("address", c.address))
+	result, err := mongoClient.RoundTrip(msg, tags)
+
+	// If the operation failed due to connection issues, try to recreate the client
+	if err != nil && c.isConnectionError(err) && route != nil && route.MongoClient != nil {
+		c.log.Warn("Connection error detected in direct client usage, attempting to recreate MongoDB client",
+			zap.String("target_database", targetDatabase),
+			zap.Error(err))
+
+		// Mark the route's client as nil to force recreation on next request
+		route.MongoClient = nil
+	}
+
+	return result, err
 }
 
 // roundTripWithPool handles round trip using the pool manager
@@ -972,6 +1013,68 @@ func (c *connection) isWildcardOrRegexMatch(targetDatabase string, route *RouteC
 	return false
 }
 
+// isConnectionError determines if an error is related to connection issues
+func (c *connection) isConnectionError(err error) bool {
+	if err == nil {
+		return false
+	}
+
+	errStr := err.Error()
+	// Check for common connection-related error patterns
+	connectionErrorPatterns := []string{
+		"connection refused",
+		"connection reset",
+		"connection timeout",
+		"network is unreachable",
+		"no such host",
+		"context deadline exceeded",
+		"server selection error",
+		"topology closed",
+		"connection pool closed",
+		"connection not available",
+	}
+
+	for _, pattern := range connectionErrorPatterns {
+		if strings.Contains(strings.ToLower(errStr), pattern) {
+			return true
+		}
+	}
+
+	return false
+}
+
+// createLazyMongoClient creates a MongoDB client lazily when the route's client is nil
+func (c *connection) createLazyMongoClient(route *RouteConfig, targetDatabase string) (*mongo.Mongo, error) {
+	c.log.Debug("Creating lazy MongoDB client",
+		zap.String("target_database", targetDatabase),
+		zap.String("connection_string", route.ConnectionString))
+
+	// Create MongoDB client options from the route's connection string
+	opts := options.Client().ApplyURI(route.ConnectionString)
+
+	// Apply MongoDB client settings using the shared utility function
+	opts = util.ApplyMongoDBClientSettings(opts, targetDatabase, c.mongodbDefaults, route.DatabaseConfig, c.log)
+
+	// Create the MongoDB client without pinging (lazy creation)
+	mongoClient, err := mongo.ConnectWithSessionManager(c.log, c.metrics, opts, false, c.globalSessionManager) // Don't ping for lazy clients
+	if err != nil {
+		return nil, fmt.Errorf("failed to create lazy MongoDB client: %v", err)
+	}
+
+	// Update the route's MongoDB client for future use
+	route.MongoClient = mongoClient
+
+	// Register the client with the proxy for cleanup tracking
+	if c.proxy != nil {
+		c.proxy.RegisterMongoClient(targetDatabase, mongoClient)
+	}
+
+	c.log.Info("Successfully created lazy MongoDB client",
+		zap.String("target_database", targetDatabase))
+
+	return mongoClient, nil
+}
+
 // createMongoClientWithCredentials creates a MongoDB client using the client's credentials
 func (c *connection) createMongoClientWithCredentials(route *RouteConfig, username, password string) (*mongo.Mongo, error) {
 	// Extract host and port from the route's connection string
@@ -1036,7 +1139,7 @@ func (c *connection) createMongoClientWithCredentials(route *RouteConfig, userna
 	opts = util.ApplyMongoDBClientSettings(opts, c.intendedDatabase, c.mongodbDefaults, route.DatabaseConfig, c.log)
 
 	// Create the MongoDB client
-	mongoClient, err := mongo.Connect(c.log, c.metrics, opts, false) // Don't ping for dynamic clients
+	mongoClient, err := mongo.ConnectWithSessionManager(c.log, c.metrics, opts, false, c.globalSessionManager) // Don't ping for dynamic clients
 	if err != nil {
 		return nil, fmt.Errorf("failed to create MongoDB client with client credentials: %v", err)
 	}

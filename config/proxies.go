@@ -31,9 +31,14 @@ func (c *Config) Proxies(log *zap.Logger) ([]*proxy.Proxy, error) {
 			opts := options.Client().ApplyURI(dbConfig.ConnectionString)
 			// Apply MongoDB client pool settings from config
 			opts = c.ApplyMongoDBClientSettings(opts, dbName, &dbConfig)
-			mongoClient, err = mongo.ConnectWithSessionManager(log, c.metrics, opts, c.ping, globalSessionManager)
+			// Set ping to false to avoid startup failures - connections will be created lazily
+			mongoClient, err = mongo.ConnectWithSessionManager(log, c.metrics, opts, false, globalSessionManager)
 			if err != nil {
-				return nil, fmt.Errorf("failed to connect to database %s: %v", dbName, err)
+				log.Warn("Failed to connect to database during startup, will retry on first request",
+					zap.String("database", dbName),
+					zap.Error(err))
+				// Continue with nil client - will be created lazily on first request
+				mongoClient = nil
 			}
 		} else {
 			// Use structured config
@@ -41,9 +46,14 @@ func (c *Config) Proxies(log *zap.Logger) ([]*proxy.Proxy, error) {
 			opts := options.Client().ApplyURI(connectionString)
 			// Apply MongoDB client pool settings from config
 			opts = c.ApplyMongoDBClientSettings(opts, dbName, &dbConfig)
-			mongoClient, err = mongo.ConnectWithSessionManager(log, c.metrics, opts, c.ping, globalSessionManager)
+			// Set ping to false to avoid startup failures - connections will be created lazily
+			mongoClient, err = mongo.ConnectWithSessionManager(log, c.metrics, opts, false, globalSessionManager)
 			if err != nil {
-				return nil, fmt.Errorf("failed to connect to database %s: %v", dbName, err)
+				log.Warn("Failed to connect to database during startup, will retry on first request",
+					zap.String("database", dbName),
+					zap.Error(err))
+				// Continue with nil client - will be created lazily on first request
+				mongoClient = nil
 			}
 		}
 
@@ -90,10 +100,14 @@ func (c *Config) Proxies(log *zap.Logger) ([]*proxy.Proxy, error) {
 	// Create a single proxy instance for the configured listen address
 	listenAddress := fmt.Sprintf("%s:%d", c.tomlConfig.Mongobouncer.ListenAddr, c.tomlConfig.Mongobouncer.ListenPort)
 
-	p, err := proxy.NewProxy(log, c.metrics, "mongobouncer", c.network, listenAddress, c.unlink, poolManager, databaseRouter, c.tomlConfig.Mongobouncer.AuthEnabled, c.tomlConfig.Mongobouncer.RegexCredentialPassthrough, c.tomlConfig.Mongobouncer.MongoDBConfig)
+	p, err := proxy.NewProxy(log, c.metrics, "mongobouncer", c.network, listenAddress, c.unlink, poolManager, databaseRouter, c.tomlConfig.Mongobouncer.AuthEnabled, c.tomlConfig.Mongobouncer.RegexCredentialPassthrough, c.tomlConfig.Mongobouncer.MongoDBConfig, globalSessionManager)
 	if err != nil {
 		return nil, err
 	}
+
+	// Register startup MongoDB clients for cleanup tracking
+	p.RegisterStartupMongoClients(databaseRouter)
+
 	proxies = append(proxies, p)
 
 	return proxies, nil

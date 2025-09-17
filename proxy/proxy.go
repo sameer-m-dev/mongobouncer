@@ -9,6 +9,7 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/sameer-m-dev/mongobouncer/mongo"
 	"github.com/sameer-m-dev/mongobouncer/pool"
 	"github.com/sameer-m-dev/mongobouncer/util"
 	"go.uber.org/zap"
@@ -30,13 +31,18 @@ type Proxy struct {
 	regexCredentialPassthrough bool
 
 	// MongoDB client settings for dynamic client creation
-	mongodbDefaults util.MongoDBClientConfig // Default MongoDB client settings
+	mongodbDefaults      util.MongoDBClientConfig // Default MongoDB client settings
+	globalSessionManager *mongo.SessionManager    // Global session manager for shared session management
+
+	// MongoDB client tracking for cleanup
+	mongoClients map[string]*mongo.Mongo // Track MongoDB clients by database name
+	clientsMutex sync.RWMutex            // Mutex for thread-safe access to mongoClients
 
 	quit chan interface{}
 	kill chan interface{}
 }
 
-func NewProxy(log *zap.Logger, metrics util.MetricsInterface, label, network, address string, unlink bool, poolManager *pool.Manager, databaseRouter *DatabaseRouter, authEnabled bool, regexCredentialPassthrough bool, mongodbDefaults util.MongoDBClientConfig) (*Proxy, error) {
+func NewProxy(log *zap.Logger, metrics util.MetricsInterface, label, network, address string, unlink bool, poolManager *pool.Manager, databaseRouter *DatabaseRouter, authEnabled bool, regexCredentialPassthrough bool, mongodbDefaults util.MongoDBClientConfig, globalSessionManager *mongo.SessionManager) (*Proxy, error) {
 	if label != "" {
 		log = log.With(zap.String("cluster", label))
 	}
@@ -53,6 +59,8 @@ func NewProxy(log *zap.Logger, metrics util.MetricsInterface, label, network, ad
 		authEnabled:                authEnabled,
 		regexCredentialPassthrough: regexCredentialPassthrough,
 		mongodbDefaults:            mongodbDefaults,
+		globalSessionManager:       globalSessionManager,
+		mongoClients:               make(map[string]*mongo.Mongo),
 
 		quit: make(chan interface{}),
 		kill: make(chan interface{}),
@@ -67,6 +75,10 @@ func (p *Proxy) Shutdown() {
 	defer func() {
 		_ = recover() // "close of closed channel" panic if Shutdown() was already called
 	}()
+
+	// Close all MongoDB clients before shutting down
+	p.CloseAllMongoClients()
+
 	close(p.quit)
 }
 
@@ -77,6 +89,71 @@ func (p *Proxy) Kill() {
 		_ = recover() // "close of closed channel" panic if Kill() was already called
 	}()
 	close(p.kill)
+}
+
+// RegisterMongoClient registers a MongoDB client for cleanup tracking
+func (p *Proxy) RegisterMongoClient(databaseName string, client *mongo.Mongo) {
+	p.clientsMutex.Lock()
+	defer p.clientsMutex.Unlock()
+
+	p.mongoClients[databaseName] = client
+	p.log.Debug("Registered MongoDB client for cleanup",
+		zap.String("database", databaseName))
+}
+
+// UnregisterMongoClient removes a MongoDB client from cleanup tracking
+func (p *Proxy) UnregisterMongoClient(databaseName string) {
+	p.clientsMutex.Lock()
+	defer p.clientsMutex.Unlock()
+
+	delete(p.mongoClients, databaseName)
+	p.log.Debug("Unregistered MongoDB client from cleanup",
+		zap.String("database", databaseName))
+}
+
+// CloseAllMongoClients closes all tracked MongoDB clients
+func (p *Proxy) CloseAllMongoClients() {
+	p.clientsMutex.Lock()
+	defer p.clientsMutex.Unlock()
+
+	if len(p.mongoClients) == 0 {
+		p.log.Debug("No MongoDB clients to close")
+		return
+	}
+
+	p.log.Info("Closing all MongoDB clients",
+		zap.Int("client_count", len(p.mongoClients)))
+
+	for databaseName, client := range p.mongoClients {
+		if client != nil {
+			p.log.Debug("Closing MongoDB client",
+				zap.String("database", databaseName))
+			client.Close()
+		}
+	}
+
+	// Clear the map
+	p.mongoClients = make(map[string]*mongo.Mongo)
+	p.log.Info("All MongoDB clients closed")
+}
+
+// RegisterStartupMongoClients registers MongoDB clients created during startup
+func (p *Proxy) RegisterStartupMongoClients(databaseRouter *DatabaseRouter) {
+	p.clientsMutex.Lock()
+	defer p.clientsMutex.Unlock()
+
+	// Get all routes and register their MongoDB clients
+	routes := databaseRouter.GetAllRoutes()
+	for databaseName, route := range routes {
+		if route.MongoClient != nil {
+			p.mongoClients[databaseName] = route.MongoClient
+			p.log.Debug("Registered startup MongoDB client for cleanup",
+				zap.String("database", databaseName))
+		}
+	}
+
+	p.log.Info("Registered startup MongoDB clients for cleanup",
+		zap.Int("client_count", len(p.mongoClients)))
 }
 
 func (p *Proxy) run() error {
@@ -171,7 +248,7 @@ func (p *Proxy) accept(l net.Listener) {
 				zap.String("network", p.network))
 
 			// Call handleConnection which now returns the database used
-			databaseUsed := handleConnection(log, p.metrics, p.address, c, p.poolManager, p.kill, p.databaseRouter, p.authEnabled, p.regexCredentialPassthrough, p.mongodbDefaults)
+			databaseUsed := handleConnection(log, p.metrics, p.address, c, p.poolManager, p.kill, p.databaseRouter, p.authEnabled, p.regexCredentialPassthrough, p.mongodbDefaults, p.globalSessionManager, p)
 
 			_ = c.Close()
 			log.Debug("Client connection closed",
