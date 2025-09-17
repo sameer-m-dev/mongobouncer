@@ -1,0 +1,26 @@
+{
+    "name": "mongobouncer-session-transaction-tests",
+    "version": "1.0.0",
+    "description": "Test suite for MongoBouncer session and transaction support",
+    "main": "session_transaction_test.js",
+    "scripts": {
+        "test": "node session_transaction_test.js",
+        "test-direct": "MONGODB_URI=mongodb://localhost:27017/testdb node session_transaction_test.js",
+        "test-bouncer": "MONGODB_BOUNCER_URI=mongodb://localhost:27017/testdb node session_transaction_test.js"
+    },
+    "dependencies": {
+        "mongoose": "^7.0.0"
+    },
+    "engines": {
+        "node": ">=14.0.0"
+    },
+    "keywords": [
+        "mongodb",
+        "mongobouncer",
+        "sessions",
+        "transactions",
+        "testing"
+    ],
+    "author": "MongoBouncer Team",
+    "license": "MIT"
+}

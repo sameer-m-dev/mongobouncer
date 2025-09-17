@@ -1,0 +1,16 @@
+{{- if and .Values.rbac.create .Values.rbac.roleBinding.create -}}
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: {{ include "mongobouncer.fullname" . }}-role-binding
+  labels:
+    {{- include "mongobouncer.labels" . | nindent 4 }}
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: {{ include "mongobouncer.fullname" . }}-role
+subjects:
+- kind: ServiceAccount
+  name: {{ include "mongobouncer.serviceAccountName" . }}
+  namespace: {{ .Release.Namespace }}
+{{- end }}

@@ -27,6 +27,13 @@ alwaysApply: true
                        │  Prometheus     │
                        │   Metrics       │
                        └─────────────────┘
+                              │
+                              ▼
+                       ┌─────────────────┐
+                       │  Distributed    │
+                       │   Cache         │
+                       │  (groupcache)   │
+                       └─────────────────┘
 ```
 
 ### Package Structure
@@ -34,10 +41,11 @@ alwaysApply: true
 mongobouncer/
 ├── config/          # TOML configuration system
 ├── proxy/           # Connection proxy and routing
-├── mongo/           # MongoDB client management
+├── mongo/           # MongoDB client management + distributed cache
 ├── pool/            # Connection pool management
 ├── auth/            # Authentication handling
 ├── util/            # Utilities (metrics, helpers)
+├── deploy/          # Kubernetes deployment (Helm charts)
 └── test/            # Integration and scenario tests
 ```
 
@@ -46,8 +54,9 @@ mongobouncer/
 - **Configuration**: TOML-based
 - **Monitoring**: Native Prometheus metrics (HTTP endpoints)
 - **MongoDB Driver**: Official Go MongoDB driver
+- **Distributed Cache**: groupcache-go/v3 with kubegroup for Kubernetes auto-discovery
 - **Testing**: Comprehensive test suite with benchmarks
-- **Deployment**: Single binary with Docker support
+- **Deployment**: Single binary with Docker support + Kubernetes Helm charts
 
 ## Configuration System
 
@@ -67,11 +76,23 @@ default_pool_size = 20
 max_client_conn = 100
 
 # Prometheus metrics
-metrics_address = "localhost:9090"
-metrics_enabled = true
+[mongobouncer.metrics]
+enabled = true
+listen_addr = "0.0.0.0"
+listen_port = 9090
 
-# Dynamic configuration
-dynamic_config = "http://config-server/mongobouncer"
+# Distributed cache for Kubernetes scalability
+[mongobouncer.shared_cache]
+enabled = false                    # Enable distributed cache
+listen_addr = "0.0.0.0"           # Listen address for peer communication
+listen_port = 8080                # Listen port for peer communication
+cache_size_bytes = "64Mi"         # Cache size (Kubernetes format)
+session_expiry = "30m"             # Session expiration
+transaction_expiry = "2m"          # Transaction expiration
+cursor_expiry = "24h"              # Cursor expiration
+debug = false                      # Debug logging
+# peer_urls = []                   # Manual peers for local testing
+
 
 [databases]
 # Database routing configurations
@@ -83,11 +104,6 @@ analytics = {
     max_connections = 50,
     pool_mode = "statement"
 }
-
-[users]
-# User-specific settings
-app_user = { password = "hash123", pool_mode = "transaction", max_user_connections = 25 }
-readonly = { password = "hash456", pool_mode = "statement", max_user_connections = 10 }
 ```
 
 ### Command Line Interface
@@ -113,6 +129,9 @@ readonly = { password = "hash456", pool_mode = "statement", max_user_connections
 - **Authentication**: Trust, MD5, and user-based auth systems
 - **Dynamic Configuration**: Runtime config updates via HTTP endpoints
 - **Error Handling**: Comprehensive error handling and failover logic
+- **Distributed Cache**: Kubernetes-scalable session and transaction sharing
+- **Auto-Discovery**: Automatic peer discovery in Kubernetes environments
+- **Manual Invalidation**: Remove completed transactions instead of waiting for TTL
 
 ### Monitoring & Observability
 **Prometheus Metrics** (served on `:9090/metrics`):
@@ -171,7 +190,7 @@ type Config interface {
 
 ### Prerequisites
 - MongoDB 3.6+ (standalone, replica set, or sharded cluster)
-- Go 1.23+ for building from source
+- Go 1.24+ for building from source
 - Prometheus for metrics scraping (optional)
 
 ### Build Process
@@ -204,8 +223,23 @@ listen_port = 27017
 pool_mode = "session"
 default_pool_size = 50
 max_client_conn = 500
-metrics_address = "0.0.0.0:9090"
 log_level = "info"
+
+[mongobouncer.metrics]
+enabled = true
+listen_addr = "0.0.0.0"
+listen_port = 9090
+
+# Distributed cache for Kubernetes scalability
+[mongobouncer.shared_cache]
+enabled = true
+listen_addr = "0.0.0.0"
+listen_port = 8080
+cache_size_bytes = "128Mi"
+session_expiry = "30m"
+transaction_expiry = "2m"
+cursor_expiry = "24h"
+debug = false
 
 [databases]
 # Production database clusters
@@ -218,7 +252,7 @@ reporting = "mongodb://reporting-cluster:27017/reports?readPreference=secondary"
 
 ### Core Application Files
 - `mongobouncer.go` - Main application entry point
-- `examples/mongobouncer.example.toml` - Example configuration file
+- `examples/mongobouncer.example.toml` - Example configuration file. Always make sure that this file has every possible configurable, since this is the primary example config file of this project
 
 ### Package Details
 ```
@@ -232,9 +266,13 @@ proxy/
 └── router.go        # Database routing logic
 
 mongo/
-├── mongo.go         # MongoDB client wrapper
-├── cursor_cache.go  # Cursor tracking and management
-└── transaction_cache.go # Transaction pinning logic
+├── mongo.go              # MongoDB client wrapper
+├── cursor_cache.go        # Cursor tracking and management
+├── transaction_cache.go   # Transaction pinning logic
+├── distributed_cache.go   # Distributed cache implementation (groupcache)
+├── session_manager.go    # Session management
+├── topology_monitor.go   # MongoDB topology monitoring
+└── operations.go         # MongoDB operations handling
 
 util/
 ├── metrics.go       # Prometheus metrics implementation
@@ -245,11 +283,28 @@ pool/
 
 auth/
 └── auth.go         # Authentication systems
+
+deploy/
+└── helm/           # Kubernetes Helm charts
+    ├── Chart.yaml
+    ├── values.yaml
+    ├── templates/
+    │   ├── deployment.yaml
+    │   ├── service.yaml
+    │   ├── configmap.yaml
+    │   ├── rbac-role.yaml
+    │   └── rbac-rolebinding.yaml
+    └── values-distributed.yaml
 ```
 
 ### Documentation & Reports
 - `README.md` - Project overview and usage instructions
-- `PROMETHEUS_MIGRATION_REPORT.md` - Detailed migration documentation
+- `docs/DISTRIBUTED_CACHE.md` - Distributed cache implementation and Kubernetes deployment guide
+- `docs/SESSION_TRANSACTION_SUPPORT.md` - Session and transaction support documentation
+- `docs/AUTHENTICATION.md` - Authentication system documentation
+- `docs/COMPREHENSIVE_TESTS.md` - Testing documentation
+- `docs/PROMETHEUS_MIGRATION.md` - Metrics migration guide
+- `docs/CONNECTION_POOL_ARCHITECTURE.md` - Connection pooling architecture guide
 - `test_*.toml` - Various test configurations
 
 ## Development Workflow
@@ -296,6 +351,16 @@ go test ./test/ -v
 - **Connection Reuse**: Efficient connection pooling and reuse
 - **Session Affinity**: Transaction and cursor pinning to specific connections
 - **Graceful Degradation**: Handles connection failures and network issues
+
+### Distributed Cache Architecture
+- **groupcache-go/v3**: Modern distributed caching library with Set/Get/Remove operations
+- **kubegroup**: Kubernetes auto-discovery for peer management
+- **Session Sharing**: Sessions created in one pod accessible from all pods
+- **Transaction Consistency**: Transaction state shared across pod replicas
+- **Manual Invalidation**: Remove completed transactions instead of waiting for TTL
+- **Resource Management**: Kubernetes-style resource parsing (e.g., "1Gi", "512Mi")
+- **Dual Mode**: Kubernetes auto-discovery + manual peer configuration for local testing
+- **Fallback**: Single-node in-memory caching when disabled
 
 ## Performance Characteristics
 

@@ -23,14 +23,22 @@ type cursorInfo struct {
 }
 
 type cursorCache struct {
-	c       *lruttl.Cache
-	metrics util.MetricsInterface
-	log     *zap.Logger
+	c                *lruttl.Cache
+	metrics          util.MetricsInterface
+	log              *zap.Logger
+	distributedCache *DistributedCache
 }
 
 func newCursorCache() *cursorCache {
 	return &cursorCache{
 		c: lruttl.New(maxCursors, cursorExpiry),
+	}
+}
+
+func newCursorCacheWithDistributedCache(distributedCache *DistributedCache) *cursorCache {
+	return &cursorCache{
+		c:                lruttl.New(maxCursors, cursorExpiry),
+		distributedCache: distributedCache,
 	}
 }
 
@@ -47,12 +55,23 @@ func (c *cursorCache) count() int {
 }
 
 func (c *cursorCache) peek(cursorID int64, collection string) (server driver.Server, ok bool) {
+	// First check local cache
 	v, ok := c.c.Peek(buildKey(cursorID, collection))
-	if !ok {
-		return
+	if ok {
+		cursorInfo := v.(cursorInfo)
+		return cursorInfo.server, true
 	}
-	cursorInfo := v.(cursorInfo)
-	return cursorInfo.server, true
+
+	// If not found locally and distributed cache is enabled, check distributed cache
+	if c.distributedCache != nil && c.distributedCache.IsEnabled() {
+		if _, _, found := c.distributedCache.GetCursor(cursorID, collection); found {
+			// Note: We can't get the actual server object from distributed cache
+			// This is a limitation we'll need to handle at a higher level
+			return nil, true
+		}
+	}
+
+	return nil, false
 }
 
 func (c *cursorCache) add(cursorID int64, collection string, server driver.Server, databaseName string) {
@@ -61,6 +80,18 @@ func (c *cursorCache) add(cursorID int64, collection string, server driver.Serve
 		databaseName: databaseName,
 	}
 	c.c.Add(buildKey(cursorID, collection), info)
+
+	// Also store in distributed cache if enabled
+	if c.distributedCache != nil && c.distributedCache.IsEnabled() {
+		if err := c.distributedCache.StoreCursor(cursorID, collection, server, databaseName); err != nil {
+			if c.log != nil {
+				c.log.Warn("Failed to store cursor in distributed cache",
+					zap.Int64("cursor_id", cursorID),
+					zap.String("collection", collection),
+					zap.Error(err))
+			}
+		}
+	}
 }
 
 func (c *cursorCache) remove(cursorID int64, collection string) {
@@ -78,6 +109,18 @@ func (c *cursorCache) remove(cursorID int64, collection string) {
 			databaseName = "default"
 		}
 		_ = c.metrics.Incr("cursor_closed", []string{fmt.Sprintf("database:%s", databaseName)}, 1)
+	}
+
+	// Also remove from distributed cache if enabled
+	if c.distributedCache != nil && c.distributedCache.IsEnabled() {
+		if err := c.distributedCache.RemoveCursor(cursorID, collection); err != nil {
+			if c.log != nil {
+				c.log.Warn("Failed to remove cursor from distributed cache",
+					zap.Int64("cursor_id", cursorID),
+					zap.String("collection", collection),
+					zap.Error(err))
+			}
+		}
 	}
 }
 

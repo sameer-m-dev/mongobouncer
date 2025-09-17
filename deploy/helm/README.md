@@ -16,6 +16,8 @@ MongoBouncer is a MongoDB connection pooling proxy that serves as a connection m
 - **Production Scale**: Built for high-scale applications and multi-process deployments
 - **Native Prometheus Metrics**: Built-in metrics server with comprehensive MongoDB proxy metrics
 - **TLS/SSL Support**: Full support for secure client and server connections
+- **Distributed Cache**: Kubernetes-native distributed caching for horizontal scaling
+- **Session Continuity**: Sessions persist across pod restarts and scaling events
 
 ## Prerequisites
 
@@ -282,6 +284,71 @@ monitoring:
     enabled: true
   serviceMonitor:
     enabled: false
+```
+
+### Distributed Cache Configuration
+
+For horizontal scaling with session continuity, enable the distributed cache:
+
+```yaml
+# Enable distributed cache for Kubernetes scaling
+app:
+  config:
+    sharedCache:
+      enabled: true
+      groupcachePort: ":8080"
+      labelSelector: "app=mongobouncer"
+      cacheSizeBytes: "128Mi" # Kubernetes-style resource string
+      sessionExpiry: "30m"
+      transactionExpiry: "2m"
+      cursorExpiry: "24h"
+      debug: false
+      # Leave peerUrls empty for Kubernetes auto-discovery
+      peerUrls: []
+
+# Multiple replicas for distributed cache
+replicaCount: 3
+
+# RBAC for pod discovery
+rbac:
+  create: true
+  role:
+    create: true
+  roleBinding:
+    create: true
+
+# Service for groupcache peer communication
+service:
+  groupcache:
+    enabled: true
+    port: 8080
+    targetPort: groupcache
+```
+
+### Local Testing Configuration
+
+For testing without Kubernetes, use manual peer configuration:
+
+```yaml
+app:
+  config:
+    sharedCache:
+      enabled: true
+      groupcachePort: ":8080"
+      cacheSizeBytes: "64Mi"
+      debug: true
+      # Manual peer configuration for local testing
+      peerUrls: [
+        "http://localhost:8081",
+        "http://localhost:8082"
+      ]
+
+# Single replica for local testing
+replicaCount: 1
+
+# Disable RBAC for local testing
+rbac:
+  create: false
 ```
 
 ### High Availability with TLS

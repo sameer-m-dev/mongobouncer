@@ -2,6 +2,7 @@ package mongo
 
 import (
 	"context"
+	"encoding/base64"
 	"errors"
 	"fmt"
 	"net"
@@ -59,6 +60,7 @@ type Mongo struct {
 	topology     *topology.Topology
 	cursors      *cursorCache
 	transactions *transactionCache
+	sessions     *SessionManager
 	databaseName string // Database name from connection string
 
 	roundTripCtx    context.Context
@@ -195,6 +197,14 @@ func extractDatabaseName(opts *options.ClientOptions) string {
 }
 
 func Connect(log *zap.Logger, metrics util.MetricsInterface, opts *options.ClientOptions, ping bool) (*Mongo, error) {
+	return ConnectWithSessionManager(log, metrics, opts, ping, nil)
+}
+
+func ConnectWithSessionManager(log *zap.Logger, metrics util.MetricsInterface, opts *options.ClientOptions, ping bool, sessionManager *SessionManager) (*Mongo, error) {
+	return ConnectWithDistributedCache(log, metrics, opts, ping, sessionManager, nil)
+}
+
+func ConnectWithDistributedCache(log *zap.Logger, metrics util.MetricsInterface, opts *options.ClientOptions, ping bool, sessionManager *SessionManager, distributedCache *DistributedCache) (*Mongo, error) {
 	// timeout shouldn't be hit if ping == false, as Connect doesn't block the current goroutine
 	ctx, cancel := context.WithTimeout(context.Background(), pingTimeout)
 	defer cancel()
@@ -233,7 +243,30 @@ func Connect(log *zap.Logger, metrics util.MetricsInterface, opts *options.Clien
 	go topologyMonitor(log, t)
 
 	rtCtx, rtCancel := context.WithCancel(context.Background())
-	cursors := newCursorCache()
+
+	// Create caches with distributed cache support if available
+	var cursors *cursorCache
+	var transactions *transactionCache
+	var sessions *SessionManager
+
+	if distributedCache != nil && distributedCache.IsEnabled() {
+		cursors = newCursorCacheWithDistributedCache(distributedCache)
+		transactions = newTransactionCacheWithDistributedCache(distributedCache, log)
+		if sessionManager != nil {
+			sessions = sessionManager
+		} else {
+			sessions = NewSessionManagerWithDistributedCache(log, distributedCache)
+		}
+	} else {
+		cursors = newCursorCache()
+		transactions = newTransactionCache()
+		if sessionManager != nil {
+			sessions = sessionManager
+		} else {
+			sessions = NewSessionManager(log)
+		}
+	}
+
 	cursors.setMetrics(metrics)
 	cursors.setLogger(log)
 
@@ -244,7 +277,8 @@ func Connect(log *zap.Logger, metrics util.MetricsInterface, opts *options.Clien
 		client:          c,
 		topology:        t,
 		cursors:         cursors,
-		transactions:    newTransactionCache(),
+		transactions:    transactions,
+		sessions:        sessions,
 		databaseName:    databaseName,
 		roundTripCtx:    rtCtx,
 		roundTripCancel: rtCancel,
@@ -262,6 +296,11 @@ func (m *Mongo) Description() description.Topology {
 
 func (m *Mongo) DatabaseName() string {
 	return m.databaseName
+}
+
+// GetSessionManager returns the session manager instance
+func (m *Mongo) GetSessionManager() *SessionManager {
+	return m.sessions
 }
 
 // GetPoolStats returns the current connection pool statistics
@@ -396,10 +435,21 @@ func (m *Mongo) cacheGauge(name string, count float64) {
 }
 
 func (m *Mongo) cacheMonitor() {
+	ticker := time.NewTicker(1 * time.Second)
+	sessionCleanupTicker := time.NewTicker(30 * time.Second) // Clean up sessions every 30 seconds
+	defer ticker.Stop()
+	defer sessionCleanupTicker.Stop()
+
 	for {
-		m.cacheGauge("cursors", float64(m.cursors.count()))
-		m.cacheGauge("transactions", float64(m.transactions.count()))
-		time.Sleep(1 * time.Second)
+		select {
+		case <-ticker.C:
+			m.cacheGauge("cursors", float64(m.cursors.count()))
+			m.cacheGauge("transactions", float64(m.transactions.count()))
+			m.cacheGauge("sessions", float64(m.sessions.GetSessionCount()))
+		case <-sessionCleanupTicker.C:
+			// Clean up sessions that have been inactive for more than 5 minutes
+			m.sessions.CleanupInactiveSessions(5 * time.Minute)
+		}
 	}
 }
 
@@ -496,14 +546,87 @@ func (m *Mongo) RoundTrip(msg *Message, tags []string) (_ *Message, err error) {
 	maxRetries := 3
 	baseDelay := 100 * time.Millisecond
 
-	for attempt := 0; attempt <= maxRetries; attempt++ {
-		// CursorID is pinned to a server by CursorID-collection name key
-		// Transaction is pinned to a server by the issued lsid
-		requestCursorID, _ := msg.Op.CursorID()
-		requestCommand, collection := msg.Op.CommandAndCollection()
-		transactionDetails := msg.Op.TransactionDetails()
+	// Extract transaction details and session once, outside the retry loop
+	requestCursorID, _ := msg.Op.CursorID()
+	requestCommand, collection := msg.Op.CommandAndCollection()
+	transactionDetails := msg.Op.TransactionDetails()
 
-		server, err := m.selectServer(requestCursorID, collection, transactionDetails, msg.Op)
+	// Handle session and transaction logic outside retry loop
+	var session *Session
+	var server driver.Server
+
+	if transactionDetails != nil {
+		// Check if we have an existing session
+		var exists bool
+		session, exists = m.sessions.GetSession(transactionDetails.LsID)
+		if !exists {
+			// Create a new session if it doesn't exist
+			// Use the lsid from the transaction details as the session ID
+			sessionID := base64.StdEncoding.EncodeToString(transactionDetails.LsID)
+			session = &Session{
+				ID:               sessionID,
+				LsID:             transactionDetails.LsID,
+				ClientID:         "unknown", // We don't have client ID in this context
+				State:            SessionStateActive,
+				CreatedAt:        time.Now(),
+				LastActivity:     time.Now(),
+				TransactionState: TransactionStateNone,
+				CurrentTxnNumber: 0,
+			}
+
+			// Add the session to the session manager
+			m.sessions.mutex.Lock()
+			m.sessions.sessions[sessionID] = session
+			m.sessions.mutex.Unlock()
+
+			m.log.Debug("Created new session from transaction details",
+				zap.String("session_id", sessionID),
+				zap.String("lsid", fmt.Sprintf("%x", transactionDetails.LsID)))
+		}
+
+		m.log.Debug("Transaction details found",
+			zap.String("lsid", fmt.Sprintf("%x", transactionDetails.LsID)),
+			zap.Bool("is_start_transaction", transactionDetails.IsStartTransaction),
+			zap.Int64("txn_number", transactionDetails.TxnNumber),
+			zap.Bool("session_exists", session != nil))
+
+		if session != nil {
+			m.log.Debug("Session details",
+				zap.String("session_id", session.ID),
+				zap.String("session_state", string(session.TransactionState)),
+				zap.Int64("session_txn_number", session.CurrentTxnNumber))
+		}
+	}
+
+	for attempt := 0; attempt <= maxRetries; attempt++ {
+		m.log.Debug("Inside retry loop",
+			zap.Int("attempt", attempt),
+			zap.Bool("session_not_nil", session != nil),
+			zap.Bool("transaction_details_not_nil", transactionDetails != nil))
+
+		if transactionDetails != nil && session != nil {
+			// Check if we have a pinned server for this transaction
+			if pinnedServer, hasPinned := m.sessions.GetPinnedServer(session); hasPinned {
+				server = pinnedServer
+				m.log.Debug("Using pinned server for transaction",
+					zap.String("session_id", session.ID),
+					zap.Int64("txn_number", transactionDetails.TxnNumber))
+			} else {
+				// No pinned server, select one normally
+				server, err = m.selectServer(requestCursorID, collection, transactionDetails, msg.Op)
+				if err != nil {
+					return nil, err
+				}
+
+				// Pin the server for this transaction if it's starting
+				if transactionDetails.IsStartTransaction {
+					// We'll pin the server after we get the connection
+				}
+			}
+		} else {
+			// No transaction details, select server normally
+			server, err = m.selectServer(requestCursorID, collection, transactionDetails, msg.Op)
+		}
 		if err != nil {
 			// Record server selection error
 			if m.metrics != nil {
@@ -559,7 +682,12 @@ func (m *Mongo) RoundTrip(msg *Message, tags []string) (_ *Message, err error) {
 			m.UpdatePoolMetricsForDatabase(databaseName)
 		}
 
-		conn, err := m.checkoutConnection(server, databaseName)
+		// Check if server is nil before attempting to checkout connection
+		if server == nil {
+			return nil, fmt.Errorf("no server available for database %s", databaseName)
+		}
+
+		conn, err := m.checkoutConnection(server, databaseName, session)
 		if err != nil {
 			// Record connection checkout error
 			if m.metrics != nil {
@@ -597,10 +725,95 @@ func (m *Mongo) RoundTrip(msg *Message, tags []string) (_ *Message, err error) {
 			fmt.Sprintf("address:%s", conn.Address().String()),
 		)
 
+		// Handle transaction state management - moved to after connection establishment
+		var isCommitOrAbortCommand bool
+
+		// Process transaction state management now that we have a connection
+		m.log.Debug("About to check transaction state management conditions",
+			zap.Bool("session_not_nil", session != nil),
+			zap.Bool("transaction_details_not_nil", transactionDetails != nil))
+
+		if session != nil && transactionDetails != nil {
+			m.log.Debug("Processing transaction state management",
+				zap.String("session_id", session.ID),
+				zap.Bool("is_start_transaction", transactionDetails.IsStartTransaction),
+				zap.Int64("txn_number", transactionDetails.TxnNumber),
+				zap.String("session_state", string(session.TransactionState)))
+
+			// Pin server and connection for transaction if starting
+			if transactionDetails.IsStartTransaction {
+				m.log.Debug("Starting transaction",
+					zap.String("session_id", session.ID),
+					zap.Int64("txn_number", transactionDetails.TxnNumber),
+					zap.String("session_state_before", string(session.TransactionState)),
+					zap.Int64("session_txn_number_before", session.CurrentTxnNumber))
+
+				err = m.sessions.StartTransaction(session, server, conn, transactionDetails.TxnNumber)
+				if err != nil {
+					m.log.Error("Failed to start transaction", zap.Error(err))
+					return nil, err
+				}
+
+				m.log.Debug("Transaction started successfully",
+					zap.String("session_id", session.ID),
+					zap.Int64("txn_number", transactionDetails.TxnNumber),
+					zap.String("session_state_after", string(session.TransactionState)),
+					zap.Int64("session_txn_number_after", session.CurrentTxnNumber))
+			}
+
+			// Update transaction state based on command
+			commandStr := string(requestCommand)
+			switch commandStr {
+			case "commitTransaction":
+				m.log.Debug("Processing commitTransaction command",
+					zap.String("session_id", session.ID),
+					zap.Int64("txn_number", transactionDetails.TxnNumber),
+					zap.String("session_state", string(session.TransactionState)),
+					zap.Int64("session_txn_number", session.CurrentTxnNumber))
+
+				err = m.sessions.CommitTransaction(session)
+				if err != nil {
+					m.log.Error("Failed to commit transaction", zap.Error(err))
+					return nil, err
+				}
+				isCommitOrAbortCommand = true
+				// Unpin the connection after the commit command is sent
+				defer m.sessions.UnpinTransaction(session)
+			case "abortTransaction":
+				err = m.sessions.AbortTransaction(session)
+				if err != nil {
+					m.log.Error("Failed to abort transaction", zap.Error(err))
+					return nil, err
+				}
+				isCommitOrAbortCommand = true
+				// Unpin the connection after the abort command is sent
+				defer m.sessions.UnpinTransaction(session)
+			case "endSessions":
+				err = m.sessions.EndSession(session)
+				if err != nil {
+					m.log.Error("Failed to end session", zap.Error(err))
+					return nil, err
+				}
+			}
+		}
+
 		defer func() {
-			err := conn.Close()
-			if err != nil {
-				m.log.Error("Error closing Mongo connection", zap.Error(err), zap.String("address", addr.String()))
+			// For commit/abort commands, always close the connection after the command is sent
+			if isCommitOrAbortCommand {
+				err := conn.Close()
+				if err != nil {
+					m.log.Error("Error closing Mongo connection after commit/abort", zap.Error(err), zap.String("address", addr.String()))
+				}
+				// Reset transaction state after connection is closed
+				if session != nil {
+					m.sessions.ResetTransactionState(session)
+				}
+			} else if session == nil || !m.sessions.IsTransactionActive(session) {
+				// For regular operations, only close if no active transaction
+				err := conn.Close()
+				if err != nil {
+					m.log.Error("Error closing Mongo connection", zap.Error(err), zap.String("address", addr.String()))
+				}
 			}
 		}()
 
@@ -816,7 +1029,7 @@ func (m *Mongo) selectServer(requestCursorID int64, collection string, transDeta
 	return m.topology.SelectServer(m.roundTripCtx, selector)
 }
 
-func (m *Mongo) checkoutConnection(server driver.Server, databaseName string) (conn driver.Connection, err error) {
+func (m *Mongo) checkoutConnection(server driver.Server, databaseName string, session *Session) (conn driver.Connection, err error) {
 	defer func(start time.Time) {
 		addr := ""
 		if conn != nil {
@@ -831,6 +1044,22 @@ func (m *Mongo) checkoutConnection(server driver.Server, databaseName string) (c
 		}
 	}(time.Now())
 
+	// Defensive check for nil server
+	if server == nil {
+		return nil, fmt.Errorf("server is nil for database %s", databaseName)
+	}
+
+	// If we have a pinned connection for this session, reuse it
+	if session != nil {
+		if pinnedConn, hasPinned := m.sessions.GetPinnedConnection(session); hasPinned {
+			m.log.Debug("Reusing pinned connection for session",
+				zap.String("session_id", session.ID),
+				zap.String("address", pinnedConn.Address().String()))
+			return pinnedConn, nil
+		}
+	}
+
+	// Otherwise, get a new connection from the server
 	conn, err = server.Connection(m.roundTripCtx)
 	if err != nil {
 		return nil, err

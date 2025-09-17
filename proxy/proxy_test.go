@@ -235,7 +235,7 @@ func setupProxies(t *testing.T, startPort int, count int) []*Proxy {
 		}
 		upstreams[address] = upstream
 
-		proxy, err := NewProxy(zap.L(), metrics, "label", "tcp4", address, false, nil, nil, false, false, util.MongoDBClientConfig{})
+		proxy, err := NewProxy(zap.L(), metrics, "label", "tcp4", address, false, nil, nil, false, false, util.MongoDBClientConfig{}, nil, nil)
 		assert.Nil(t, err)
 
 		proxies = append(proxies, proxy)

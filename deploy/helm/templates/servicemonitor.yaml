@@ -1,19 +1,19 @@
-{{- if and .Values.monitoring.prometheus.enabled .Values.monitoring.serviceMonitor.enabled }}
+{{- if and .Values.app.config.metrics.enabled .Values.app.config.metrics.serviceMonitor.enabled }}
 apiVersion: monitoring.coreos.com/v1
 kind: ServiceMonitor
 metadata:
   name: {{ include "mongobouncer.fullname" . }}
-  {{- if .Values.monitoring.serviceMonitor.namespace }}
-  namespace: {{ .Values.monitoring.serviceMonitor.namespace }}
+  {{- if .Values.app.config.metrics.serviceMonitor.namespace }}
+  namespace: {{ .Values.app.config.metrics.serviceMonitor.namespace }}
   {{- else }}
   namespace: {{ .Release.Namespace }}
   {{- end }}
   labels:
     {{- include "mongobouncer.labels" . | nindent 4 }}
-    {{- with .Values.monitoring.serviceMonitor.additionalLabels }}
+    {{- with .Values.app.config.metrics.serviceMonitor.additionalLabels }}
     {{- toYaml . | nindent 4 }}
     {{- end }}
-  {{- with .Values.monitoring.serviceMonitor.annotations }}
+  {{- with .Values.app.config.metrics.serviceMonitor.annotations }}
   annotations:
     {{- toYaml . | nindent 4 }}
   {{- end }}
@@ -23,14 +23,12 @@ spec:
       {{- include "mongobouncer.selectorLabels" . | nindent 6 }}
   endpoints:
     - port: metrics
-      path: {{ .Values.monitoring.prometheus.path }}
-      interval: {{ .Values.monitoring.prometheus.interval }}
-      {{- if .Values.monitoring.prometheus.scrapeTimeout }}
-      scrapeTimeout: {{ .Values.monitoring.prometheus.scrapeTimeout }}
+      path: {{ .Values.app.config.metrics.serviceMonitor.path }}
+      interval: {{ .Values.app.config.metrics.serviceMonitor.interval }}
+      {{- if .Values.app.config.metrics.serviceMonitor.scrapeTimeout }}
+      scrapeTimeout: {{ .Values.app.config.metrics.serviceMonitor.scrapeTimeout }}
       {{- end }}
-  {{- if .Values.monitoring.serviceMonitor.namespace }}
   namespaceSelector:
     matchNames:
       - {{ .Release.Namespace }}
-  {{- end }}
 {{- end }}

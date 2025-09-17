@@ -44,13 +44,39 @@ data:
     ping = {{ .Values.app.config.ping }}
 
     # =====================================
+    # Distributed Cache Configuration
+    # =====================================
+    {{- if .Values.app.config.sharedCache.enabled }}
+    [mongobouncer.shared_cache]
+    enabled = {{ .Values.app.config.sharedCache.enabled }}
+    listen_addr = "{{ .Values.app.config.sharedCache.listenAddr }}"
+    listen_port = {{ .Values.app.config.sharedCache.listenPort }}
+    cache_size_bytes = "{{ .Values.app.config.sharedCache.cacheSizeBytes }}"
+    session_expiry = "{{ .Values.app.config.sharedCache.sessionExpiry }}"
+    transaction_expiry = "{{ .Values.app.config.sharedCache.transactionExpiry }}"
+    cursor_expiry = "{{ .Values.app.config.sharedCache.cursorExpiry }}"
+    debug = {{ .Values.app.config.sharedCache.debug }}
+    label_selector = "app.kubernetes.io/name={{ include "mongobouncer.name" . }},app.kubernetes.io/instance={{ .Release.Name }}"
+    {{- if .Values.app.config.sharedCache.peerUrls }}
+    peer_urls = [
+        {{- range $i, $url := .Values.app.config.sharedCache.peerUrls }}
+        "{{ $url }}"{{ if ne $i (sub (len $.Values.app.config.sharedCache.peerUrls) 1) }},{{ end }}
+        {{- end }}
+    ]
+    {{- end }}
+    {{- end }}
+
+    # =====================================
     # Metrics & Monitoring (Prometheus)
     # =====================================
-    {{- if .Values.monitoring.prometheus.enabled }}
-    metrics_address = "{{ .Values.monitoring.prometheus.address }}"
-    metrics_enabled = true
+    {{- if .Values.app.config.metrics.enabled }}
+    [mongobouncer.metrics]
+    enabled = {{ .Values.app.config.metrics.enabled }}
+    listen_addr = "{{ .Values.app.config.metrics.listenAddr }}"
+    listen_port = {{ .Values.app.config.metrics.listenPort }}
     {{- else }}
-    metrics_enabled = false
+    [mongobouncer.metrics]
+    enabled = false
     {{- end }}
 
     # =====================================

@@ -174,9 +174,12 @@ listen_port = 27017
 log_level = "debug"
 pool_mode = "session"
 max_client_conn = 100
-metrics_enabled = true
-metrics_address = "localhost:9090"
 auth_enabled = true  # Enable/disable authentication
+
+[mongobouncer.metrics]
+enabled = true
+listen_addr = "0.0.0.0"
+listen_port = 9090
 ```
 
 ### Database Configuration

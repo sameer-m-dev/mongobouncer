@@ -55,6 +55,45 @@ app:
     network: "tcp4" # tcp4, tcp6, unix
     unlink: false # Remove unix socket file on exit
 
+    # =====================================
+    # Metrics & Monitoring (Prometheus)
+    # =====================================
+    metrics:
+      enabled: true
+      listenAddr: "0.0.0.0"
+      listenPort: 9090
+      serviceMonitor:
+        enabled: true
+        interval: "30s"
+        scrapeTimeout: "10s"
+        path: "/metrics"
+        additionalLabels: {}
+        annotations: {}
+
+    # =====================================
+    # Distributed Cache Configuration (Beta Mode, use with caution. NOT PRODUCTION READY)
+    # =====================================
+    sharedCache:
+      enabled: false # Enable distributed cache for Kubernetes scaling
+      listenAddr: "0.0.0.0" # Listen address for groupcache peer communication
+      listenPort: 8080 # Listen port for groupcache peer communication
+      cacheSizeBytes: "128Mi" # Kubernetes-style resource string (e.g., "1Gi", "512Mi", "256Mi")
+      sessionExpiry: "30m" # Session expiration duration
+      transactionExpiry: "2m" # Transaction expiration duration
+      cursorExpiry: "24h" # Cursor expiration duration
+      debug: false # Enable debug logging for cache operations
+      # Manual peer configuration for non-Kubernetes environments (leave empty for auto-discovery)
+      peerUrls: []
+      # Example for local testing:
+      # peerUrls: ["http://localhost:8081", "http://localhost:8082"]
+
+      # Request Forwarding Configuration (automatically enabled when shared_cache is enabled)
+      # Used to forward requests to the correct pod for session routing
+      maxConnections: 10 # Maximum connections to other pods
+      connectionTimeout: "5s" # Connection timeout to other pods
+      keepAlive: true # Enable TCP keep-alive
+      keepAliveInterval: "30s" # Keep-alive interval
+
   # Database connections - these should be configured per environment
   databases:
     # Example configurations:
@@ -153,6 +192,12 @@ service:
   # External traffic policy for LoadBalancer/NodePort
   # externalTrafficPolicy: Cluster
 
+  # Session affinity configuration for MongoDB transaction consistency
+  # This ensures clients stick to the same pod for the duration of their session
+  # Critical for MongoDB transactions which are pinned to specific servers/connections
+  sessionAffinity:
+    timeoutSeconds: 3600
+
 # ServiceAccount configuration
 serviceAccount:
   # Specifies whether a service account should be created
@@ -162,28 +207,24 @@ serviceAccount:
   # The name of the service account to use.
   name: ""
 
+# RBAC configuration for distributed cache peer discovery
+rbac:
+  # Specifies whether RBAC resources should be created
+  create: true
+  # Role for pod discovery (required when sharedCache.enabled is true)
+  role:
+    create: true
+    name: ""
+  # RoleBinding for pod discovery
+  roleBinding:
+    create: true
+    name: ""
+
 # Pod disruption budget
 podDisruptionBudget:
   enabled: true
   minAvailable: 1
   # maxUnavailable: 50%
-
-# Monitoring configuration
-monitoring:
-  # Prometheus metrics
-  prometheus:
-    enabled: true
-    address: "0.0.0.0:9090" # Metrics server address
-    port: 9090
-    path: "/metrics"
-    interval: "30s"
-
-  # ServiceMonitor for Prometheus Operator
-  serviceMonitor:
-    enabled: true
-    namespace: ""
-    additionalLabels: {}
-    annotations: {}
 
 # Extra environment variables
 extraEnvVars:
