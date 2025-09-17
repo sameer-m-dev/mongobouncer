@@ -13,6 +13,12 @@ spec:
   {{- if and .Values.service.externalTrafficPolicy (or (eq .Values.service.type "LoadBalancer") (eq .Values.service.type "NodePort")) }}
   externalTrafficPolicy: {{ .Values.service.externalTrafficPolicy }}
   {{- end }}
+  {{- if gt .Values.replicaCount 1 }}
+  sessionAffinity: ClientIP
+  sessionAffinityConfig:
+    clientIP:
+      timeoutSeconds:  {{- toYaml .Values.service.sessionAffinity.timeoutSeconds }}
+  {{- end }}
   ports:
     {{- include "mongobouncer.servicePorts" . | nindent 4 }}
   selector:

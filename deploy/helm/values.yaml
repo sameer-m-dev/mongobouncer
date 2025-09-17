@@ -65,7 +65,7 @@ app:
         annotations: {}
 
     # =====================================
-    # Distributed Cache Configuration
+    # Distributed Cache Configuration (Beta Mode, use with caution)
     # =====================================
     sharedCache:
       enabled: false # Enable distributed cache for Kubernetes scaling
@@ -80,6 +80,13 @@ app:
       peerUrls: []
       # Example for local testing:
       # peerUrls: ["http://localhost:8081", "http://localhost:8082"]
+
+      # Request Forwarding Configuration (automatically enabled when shared_cache is enabled)
+      # Used to forward requests to the correct pod for session routing
+      maxConnections: 10 # Maximum connections to other pods
+      connectionTimeout: "5s" # Connection timeout to other pods
+      keepAlive: true # Enable TCP keep-alive
+      keepAliveInterval: "30s" # Keep-alive interval
 
     # =====================================
     # Network Settings
@@ -184,6 +191,12 @@ service:
   annotations: {}
   # External traffic policy for LoadBalancer/NodePort
   # externalTrafficPolicy: Cluster
+
+  # Session affinity configuration for MongoDB transaction consistency
+  # This ensures clients stick to the same pod for the duration of their session
+  # Critical for MongoDB transactions which are pinned to specific servers/connections
+  sessionAffinity:
+    timeoutSeconds: 3600
 
 # ServiceAccount configuration
 serviceAccount:

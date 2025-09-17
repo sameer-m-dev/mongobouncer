@@ -28,19 +28,32 @@ type DistributedCacheConfig struct {
 	LabelSelector     string        `toml:"label_selector"` // Kubernetes label selector for peer discovery
 	// Manual peer configuration for non-Kubernetes environments
 	PeerURLs []string `toml:"peer_urls"`
+	// Request forwarding configuration (integrated into shared cache)
+	RequestForwarding RequestForwarderConfig `toml:"request_forwarding"`
 }
 
 // DistributedCache manages distributed caching for sessions, transactions, and cursors
 type DistributedCache struct {
-	config           *DistributedCacheConfig
-	logger           *zap.Logger
-	daemon           *groupcache.Daemon
-	discoveryGroup   *kubegroup.Group
-	sessionGroup     transport.Group
-	transactionGroup transport.Group
-	cursorGroup      transport.Group
-	enabled          bool
-	myAddress        string
+	config               *DistributedCacheConfig
+	logger               *zap.Logger
+	daemon               *groupcache.Daemon
+	discoveryGroup       *kubegroup.Group
+	sessionGroup         transport.Group
+	transactionGroup     transport.Group
+	cursorGroup          transport.Group
+	sessionLocationGroup transport.Group // New group for session location tracking
+	enabled              bool
+	myAddress            string
+	requestForwarder     *RequestForwarder // Request forwarding for session routing
+}
+
+// SessionLocation represents where a session is located
+type SessionLocation struct {
+	SessionID    string    `json:"session_id"`
+	PodIP        string    `json:"pod_ip"`
+	PodPort      int       `json:"pod_port"`
+	CreatedAt    time.Time `json:"created_at"`
+	LastActivity time.Time `json:"last_activity"`
 }
 
 // SessionData represents session data for distributed storage
@@ -183,11 +196,18 @@ func NewDistributedCache(config *DistributedCacheConfig, logger *zap.Logger) *Di
 	dc.sessionGroup = dc.createGroup("sessions", dc.sessionGetter)
 	dc.transactionGroup = dc.createGroup("transactions", dc.transactionGetter)
 	dc.cursorGroup = dc.createGroup("cursors", dc.cursorGetter)
+	dc.sessionLocationGroup = dc.createGroup("session_locations", dc.sessionLocationGetter)
+
+	// Create request forwarder when distributed cache is enabled
+	dc.requestForwarder = NewRequestForwarder(&config.RequestForwarding, dc, logger)
+	logger.Info("Request forwarder created",
+		zap.Bool("distributed_cache_enabled", config.Enabled))
 
 	logger.Info("Distributed cache initialized",
 		zap.String("my_address", dc.myAddress),
 		zap.String("label_selector", config.LabelSelector),
-		zap.Int64("cache_size_bytes", config.CacheSizeBytes))
+		zap.Int64("cache_size_bytes", config.CacheSizeBytes),
+		zap.Bool("request_forwarding_enabled", config.Enabled))
 
 	return dc
 }
@@ -476,9 +496,99 @@ func (dc *DistributedCache) RemoveCursor(cursorID int64, collection string) erro
 	return err
 }
 
+// GetRequestForwarder returns the request forwarder instance
+func (dc *DistributedCache) GetRequestForwarder() *RequestForwarder {
+	return dc.requestForwarder
+}
+
 // IsEnabled returns whether the distributed cache is enabled
 func (dc *DistributedCache) IsEnabled() bool {
 	return dc.enabled
+}
+
+// IsRequestForwardingEnabled returns whether request forwarding is enabled
+func (dc *DistributedCache) IsRequestForwardingEnabled() bool {
+	return dc.enabled && dc.requestForwarder != nil
+}
+
+// StoreSessionLocation stores the location of a session in the distributed cache
+func (dc *DistributedCache) StoreSessionLocation(sessionID, podIP string, podPort int) error {
+	if !dc.enabled || dc.sessionLocationGroup == nil {
+		return nil
+	}
+
+	location := &SessionLocation{
+		SessionID:    sessionID,
+		PodIP:        podIP,
+		PodPort:      podPort,
+		CreatedAt:    time.Now(),
+		LastActivity: time.Now(),
+	}
+
+	data, err := json.Marshal(location)
+	if err != nil {
+		return fmt.Errorf("failed to marshal session location data: %w", err)
+	}
+
+	// Store in groupcache with session ID as key
+	expire := time.Now().Add(dc.config.SessionExpiry)
+	err = dc.sessionLocationGroup.Set(context.Background(), sessionID, data, expire, false)
+	if err != nil {
+		dc.logger.Warn("Failed to store session location in distributed cache",
+			zap.String("session_id", sessionID),
+			zap.String("pod_ip", podIP),
+			zap.Int("pod_port", podPort),
+			zap.Error(err))
+	}
+
+	return nil
+}
+
+// GetSessionLocation retrieves the location of a session from the distributed cache
+func (dc *DistributedCache) GetSessionLocation(sessionID string) (string, int, bool) {
+	if !dc.enabled || dc.sessionLocationGroup == nil {
+		return "", 0, false
+	}
+
+	var data []byte
+	err := dc.sessionLocationGroup.Get(context.Background(), sessionID, transport.AllocatingByteSliceSink(&data))
+	if err != nil {
+		dc.logger.Debug("Session location not found in distributed cache",
+			zap.String("session_id", sessionID),
+			zap.Error(err))
+		return "", 0, false
+	}
+
+	var location SessionLocation
+	if err := json.Unmarshal(data, &location); err != nil {
+		dc.logger.Error("Failed to unmarshal session location data",
+			zap.String("session_id", sessionID),
+			zap.Error(err))
+		return "", 0, false
+	}
+
+	dc.logger.Debug("Retrieved session location from distributed cache",
+		zap.String("session_id", sessionID),
+		zap.String("pod_ip", location.PodIP),
+		zap.Int("pod_port", location.PodPort))
+
+	return location.PodIP, location.PodPort, true
+}
+
+// RemoveSessionLocation removes session location data from the distributed cache
+func (dc *DistributedCache) RemoveSessionLocation(sessionID string) error {
+	if !dc.enabled || dc.sessionLocationGroup == nil {
+		return nil
+	}
+
+	err := dc.sessionLocationGroup.Remove(context.Background(), sessionID)
+	if err != nil {
+		dc.logger.Warn("Failed to remove session location from distributed cache",
+			zap.String("session_id", sessionID),
+			zap.Error(err))
+	}
+
+	return err
 }
 
 // GetStats returns cache statistics
@@ -538,7 +648,17 @@ func (dc *DistributedCache) transactionGetter(ctx context.Context, key string, d
 }
 
 func (dc *DistributedCache) cursorGetter(ctx context.Context, key string, dest transport.Sink) error {
-	// This is called when a cursor is not found in the local cache
-	dc.logger.Debug("Cursor getter called for key", zap.String("key", key))
-	return fmt.Errorf("cursor not found")
+	// Cursors are ephemeral and only exist in memory across distributed nodes.
+	// When a cursor is not found in the cache, it means it doesn't exist anywhere
+	// in the cluster, so we return a "not found" error.
+	dc.logger.Debug("Cursor not found in distributed cache", zap.String("key", key))
+	return fmt.Errorf("cursor not found: %s", key)
+}
+
+func (dc *DistributedCache) sessionLocationGetter(ctx context.Context, key string, dest transport.Sink) error {
+	// Session locations are ephemeral and only exist in memory across distributed nodes.
+	// When a session location is not found in the cache, it means it doesn't exist anywhere
+	// in the cluster, so we return a "not found" error.
+	dc.logger.Debug("Session location not found in distributed cache", zap.String("key", key))
+	return fmt.Errorf("session location not found: %s", key)
 }

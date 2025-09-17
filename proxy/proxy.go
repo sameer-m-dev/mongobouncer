@@ -38,11 +38,14 @@ type Proxy struct {
 	mongoClients map[string]*mongo.Mongo // Track MongoDB clients by database name
 	clientsMutex sync.RWMutex            // Mutex for thread-safe access to mongoClients
 
+	// Request forwarding for session routing
+	requestForwarder *mongo.RequestForwarder
+
 	quit chan interface{}
 	kill chan interface{}
 }
 
-func NewProxy(log *zap.Logger, metrics util.MetricsInterface, label, network, address string, unlink bool, poolManager *pool.Manager, databaseRouter *DatabaseRouter, authEnabled bool, regexCredentialPassthrough bool, mongodbDefaults util.MongoDBClientConfig, globalSessionManager *mongo.SessionManager) (*Proxy, error) {
+func NewProxy(log *zap.Logger, metrics util.MetricsInterface, label, network, address string, unlink bool, poolManager *pool.Manager, databaseRouter *DatabaseRouter, authEnabled bool, regexCredentialPassthrough bool, mongodbDefaults util.MongoDBClientConfig, globalSessionManager *mongo.SessionManager, requestForwarder *mongo.RequestForwarder) (*Proxy, error) {
 	if label != "" {
 		log = log.With(zap.String("cluster", label))
 	}
@@ -61,6 +64,7 @@ func NewProxy(log *zap.Logger, metrics util.MetricsInterface, label, network, ad
 		mongodbDefaults:            mongodbDefaults,
 		globalSessionManager:       globalSessionManager,
 		mongoClients:               make(map[string]*mongo.Mongo),
+		requestForwarder:           requestForwarder,
 
 		quit: make(chan interface{}),
 		kill: make(chan interface{}),

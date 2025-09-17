@@ -75,7 +75,7 @@ func TestRoundTripProcessError(t *testing.T) {
 	metrics, err := util.NewMetricsClient(zap.L(), "localhost:9090")
 	assert.Nil(t, err)
 
-	p, err := proxy.NewProxy(zap.L(), metrics, "label", "tcp4", ":27017", false, nil, nil, false, false, util.MongoDBClientConfig{}, nil)
+	p, err := proxy.NewProxy(zap.L(), metrics, "label", "tcp4", ":27017", false, nil, nil, false, false, util.MongoDBClientConfig{}, nil, nil)
 	assert.Nil(t, err)
 
 	go func() {

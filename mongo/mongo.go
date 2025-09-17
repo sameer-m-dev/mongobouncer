@@ -682,6 +682,11 @@ func (m *Mongo) RoundTrip(msg *Message, tags []string) (_ *Message, err error) {
 			m.UpdatePoolMetricsForDatabase(databaseName)
 		}
 
+		// Check if server is nil before attempting to checkout connection
+		if server == nil {
+			return nil, fmt.Errorf("no server available for database %s", databaseName)
+		}
+
 		conn, err := m.checkoutConnection(server, databaseName, session)
 		if err != nil {
 			// Record connection checkout error
@@ -1038,6 +1043,11 @@ func (m *Mongo) checkoutConnection(server driver.Server, databaseName string, se
 			}, 1)
 		}
 	}(time.Now())
+
+	// Defensive check for nil server
+	if server == nil {
+		return nil, fmt.Errorf("server is nil for database %s", databaseName)
+	}
 
 	// If we have a pinned connection for this session, reuse it
 	if session != nil {

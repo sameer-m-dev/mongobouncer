@@ -101,12 +101,9 @@ func handleConnection(log *zap.Logger, metrics util.MetricsInterface, address st
 		if poolManager != nil {
 			poolManager.UnregisterClient(clientID)
 			// Only decrement sessions if we actually registered them (i.e., if we determined the database name)
-			if c.metrics != nil && c.intendedDatabase != "" {
-				databaseName := c.intendedDatabase
-				if databaseName == "" {
-					databaseName = "default"
-				}
-				_ = c.metrics.Gauge("sessions_active", -1, []string{fmt.Sprintf("database:%s", databaseName)}, 1)
+			// and it's not a default database (which we skip during registration)
+			if c.metrics != nil && c.intendedDatabase != "" && c.intendedDatabase != "default" {
+				_ = c.metrics.Gauge("sessions_active", -1, []string{fmt.Sprintf("database:%s", c.intendedDatabase)}, 1)
 			}
 		}
 	}()
@@ -514,6 +511,46 @@ func (c *connection) roundTripWithPool(msg *mongo.Message, databaseName string, 
 		zap.String("extracted_db", databaseName),
 		zap.String("actual_db", actualDatabaseName))
 
+	// Check if request forwarding is enabled and try to forward the request
+	if c.proxy != nil && c.proxy.requestForwarder != nil {
+		// Extract session ID from the message if available
+		sessionID := ""
+		if msg.Op != nil {
+			if transactionDetails := msg.Op.TransactionDetails(); transactionDetails != nil {
+				sessionID = fmt.Sprintf("%x", transactionDetails.LsID)
+			}
+		}
+
+		// If we have a session ID, try to forward the request
+		if sessionID != "" {
+			// Convert message to raw bytes for forwarding
+			rawRequest := msg.Op.Encode(msg.Op.RequestID())
+
+			// Try to forward the request
+			forwardedResponse, err := c.proxy.requestForwarder.ForwardRequest(sessionID, rawRequest, c.address)
+			if err != nil {
+				c.log.Warn("Request forwarding failed, processing locally",
+					zap.String("session_id", sessionID),
+					zap.Error(err))
+			} else if forwardedResponse != nil {
+				// Request was forwarded successfully, parse and return the response
+				c.log.Debug("Request forwarded successfully",
+					zap.String("session_id", sessionID),
+					zap.Int("response_size", len(forwardedResponse)))
+
+				// Parse the forwarded response
+				responseOp, err := mongo.Decode(forwardedResponse)
+				if err != nil {
+					c.log.Error("Failed to parse forwarded response", zap.Error(err))
+					return nil, err
+				}
+				responseMsg := &mongo.Message{Op: responseOp}
+				return responseMsg, nil
+			}
+			// If forwardedResponse is nil, it means the session should be processed locally
+		}
+	}
+
 	// Ensure client is registered with the correct database
 	// If this is the first operation for this database, re-register the client
 	if c.poolManager != nil {
@@ -721,8 +758,8 @@ func (c *connection) extractDatabaseName(op mongo.Operation) string {
 		c.log.Debug("Using fallback database name", zap.String("database", databaseName), zap.String("collection", collection))
 	}
 
-	// Track the database name for this connection (only for non-admin operations)
-	if databaseName != "admin" && databaseName != "" {
+	// Track the database name for this connection
+	if databaseName != "" {
 		// If this is the first time we're setting the database, register the session
 		if c.databaseUsed == "" {
 			// This is the first operation, register the session with the correct database

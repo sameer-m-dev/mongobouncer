@@ -178,7 +178,13 @@ func (c *Config) Proxies(log *zap.Logger) ([]*proxy.Proxy, error) {
 	// Create a single proxy instance for the configured listen address
 	listenAddress := fmt.Sprintf("%s:%d", c.tomlConfig.Mongobouncer.ListenAddr, c.tomlConfig.Mongobouncer.ListenPort)
 
-	p, err := proxy.NewProxy(log, c.metrics, "mongobouncer", c.network, listenAddress, c.unlink, poolManager, databaseRouter, c.tomlConfig.Mongobouncer.AuthEnabled, c.tomlConfig.Mongobouncer.RegexCredentialPassthrough, c.tomlConfig.Mongobouncer.MongoDBConfig, globalSessionManager)
+	// Get request forwarder from distributed cache if available
+	var requestForwarder *mongo.RequestForwarder
+	if distributedCache != nil && distributedCache.IsRequestForwardingEnabled() {
+		requestForwarder = distributedCache.GetRequestForwarder()
+	}
+
+	p, err := proxy.NewProxy(log, c.metrics, "mongobouncer", c.network, listenAddress, c.unlink, poolManager, databaseRouter, c.tomlConfig.Mongobouncer.AuthEnabled, c.tomlConfig.Mongobouncer.RegexCredentialPassthrough, c.tomlConfig.Mongobouncer.MongoDBConfig, globalSessionManager, requestForwarder)
 	if err != nil {
 		return nil, err
 	}

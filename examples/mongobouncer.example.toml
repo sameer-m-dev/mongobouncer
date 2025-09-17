@@ -61,6 +61,13 @@ cursor_expiry = "24h"              # Cursor expiration duration
 debug = false                      # Enable debug logging for cache operations
 # peer_urls = []                   # Manual peer URLs for local testing (leave empty for Kubernetes auto-discovery)
 
+# Request Forwarding Configuration (automatically enabled when shared_cache is enabled)
+# Used to forward requests to the correct pod for session routing
+max_connections = 10               # Maximum connections to other pods
+connection_timeout = "5s"          # Connection timeout to other pods
+keep_alive = true                  # Enable TCP keep-alive
+keep_alive_interval = "30s"        # Keep-alive interval
+
 # Distributed Cache Usage Examples:
 # 
 # 1. Kubernetes Production (Auto-Discovery):
