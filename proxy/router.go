@@ -33,6 +33,7 @@ type RouteConfig struct {
 	MaxConnections   int
 	Label            string
 	DatabaseConfig   *util.MongoDBClientConfig
+	clientMutex      sync.Mutex // Mutex for thread-safe lazy client creation
 }
 
 // PatternRoute represents a pattern-based route

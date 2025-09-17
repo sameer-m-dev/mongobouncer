@@ -474,7 +474,10 @@ func (c *connection) roundTrip(msg *mongo.Message, isMaster bool, tags []string)
 				zap.Error(err))
 
 			// Mark the route's client as nil to force recreation on next request
+			// Use mutex to prevent race conditions with lazy client creation
+			route.clientMutex.Lock()
 			route.MongoClient = nil
+			route.clientMutex.Unlock()
 		}
 		return result, err
 	}
@@ -490,7 +493,10 @@ func (c *connection) roundTrip(msg *mongo.Message, isMaster bool, tags []string)
 			zap.Error(err))
 
 		// Mark the route's client as nil to force recreation on next request
+		// Use mutex to prevent race conditions with lazy client creation
+		route.clientMutex.Lock()
 		route.MongoClient = nil
+		route.clientMutex.Unlock()
 	}
 
 	return result, err
@@ -1044,7 +1050,22 @@ func (c *connection) isConnectionError(err error) bool {
 }
 
 // createLazyMongoClient creates a MongoDB client lazily when the route's client is nil
+// Uses double-checked locking pattern to prevent race conditions
 func (c *connection) createLazyMongoClient(route *RouteConfig, targetDatabase string) (*mongo.Mongo, error) {
+	// First check without lock for performance
+	if route.MongoClient != nil {
+		return route.MongoClient, nil
+	}
+
+	// Acquire lock for thread-safe client creation
+	route.clientMutex.Lock()
+	defer route.clientMutex.Unlock()
+
+	// Double-check after acquiring lock
+	if route.MongoClient != nil {
+		return route.MongoClient, nil
+	}
+
 	c.log.Debug("Creating lazy MongoDB client",
 		zap.String("target_database", targetDatabase),
 		zap.String("connection_string", route.ConnectionString))
