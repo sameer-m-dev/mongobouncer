@@ -57,8 +57,10 @@ stats_period = 60  # How often to collect stats (seconds)
 
 **New Prometheus Configuration:**
 ```toml
-metrics_address = "localhost:9090"  # Prometheus metrics endpoint address
-metrics_enabled = true  # Enable Prometheus metrics collection
+[mongobouncer.metrics]
+enabled = true
+listen_addr = "0.0.0.0"
+listen_port = 9090  # Enable Prometheus metrics collection
 ```
 
 ### 5. **Codebase Updates**
@@ -175,8 +177,10 @@ Response: OK
 ### Basic Configuration
 ```toml
 [mongobouncer]
-metrics_address = "0.0.0.0:9090"  # Bind to all interfaces
-metrics_enabled = true
+[mongobouncer.metrics]
+enabled = true
+listen_addr = "0.0.0.0"
+listen_port = 9090
 
 [databases]
 app_db = "mongodb://localhost:27017/app"

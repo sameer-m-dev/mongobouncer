@@ -36,14 +36,52 @@ ping = true
 # =====================================
 # Metrics & Monitoring (Prometheus)
 # =====================================
-metrics_address = "localhost:9090"
-metrics_enabled = true
+[mongobouncer.metrics]
+enabled = true
+listen_addr = "0.0.0.0"
+listen_port = 9090
 
 # =====================================
 # Network Settings
 # =====================================
 network = "tcp4" # tcp4, tcp6, unix
 unlink = false   # Remove unix socket file on exit
+
+# =====================================
+# Distributed Cache (Kubernetes Scalability)
+# =====================================
+[mongobouncer.shared_cache]
+enabled = false                    # Enable distributed cache for Kubernetes scalability
+listen_addr = "0.0.0.0"           # Listen address for groupcache peer communication
+listen_port = 8080                # Listen port for groupcache peer communication
+cache_size_bytes = "64Mi"         # Cache size in Kubernetes-style resource format (e.g., "1Gi", "512Mi", "64Mi")
+session_expiry = "30m"             # Session expiration duration
+transaction_expiry = "2m"          # Transaction expiration duration  
+cursor_expiry = "24h"              # Cursor expiration duration
+debug = false                      # Enable debug logging for cache operations
+# peer_urls = []                   # Manual peer URLs for local testing (leave empty for Kubernetes auto-discovery)
+
+# Distributed Cache Usage Examples:
+# 
+# 1. Kubernetes Production (Auto-Discovery):
+#    enabled = true
+#    listen_addr = "0.0.0.0"
+#    listen_port = 8080
+#    cache_size_bytes = "128Mi"
+#    peer_urls = []  # Empty for auto-discovery
+#
+# 2. Local Testing (Manual Peers):
+#    enabled = true
+#    listen_addr = "0.0.0.0"
+#    listen_port = 8080
+#    cache_size_bytes = "64Mi"
+#    peer_urls = [
+#        "http://localhost:8081",
+#        "http://localhost:8082"
+#    ]
+#
+# 3. Single-Node Mode (Disabled):
+#    enabled = false  # Falls back to in-memory caching
 
 # =====================================
 # Database Configurations

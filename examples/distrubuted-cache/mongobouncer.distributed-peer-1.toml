@@ -1,0 +1,32 @@
+[mongobouncer]
+listen_addr = "0.0.0.0"
+listen_port = 27001
+log_level = "debug"
+network = "tcp4"
+pool_mode = "session"
+max_client_conn = 100
+auth_enabled = true
+regex_credential_passthrough = true
+ping = false
+
+[mongobouncer.metrics]
+enabled = true
+listen_addr = "0.0.0.0"
+listen_port = 9090
+
+[mongobouncer.shared_cache]
+enabled = true
+listen_addr = "0.0.0.0"
+listen_port = 8080
+cache_size_bytes = "128Mi" # Kubernetes-style resource string
+session_expiry = "30m"
+transaction_expiry = "2m"
+cursor_expiry = "24h"
+debug = false
+# For Kubernetes auto-discovery, leave peer_urls empty
+# For local testing, specify peer URLs manually:
+peer_urls = ["http://localhost:27002", "http://localhost:27003"]
+
+[databases]
+"testdb" = { connection_string = "mongodb://localhost:27017/testdb" }
+"*" = { connection_string = "mongodb://localhost:27017" }

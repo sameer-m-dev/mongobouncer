@@ -26,10 +26,10 @@ spec:
           
           echo "✓ MongoDB connection through MongoBouncer successful"
           
-          {{- if .Values.monitoring.prometheus.enabled }}
+          {{- if .Values.app.config.metrics.enabled }}
           # Test metrics endpoint
           echo "Testing Prometheus metrics endpoint..."
-          curl -f http://{{ include "mongobouncer.fullname" . }}.{{ .Release.Namespace }}.svc.cluster.local:{{ .Values.monitoring.prometheus.port }}{{ .Values.monitoring.prometheus.path }} | grep -q "mongobouncer"
+          curl -f http://{{ include "mongobouncer.fullname" . }}.{{ .Release.Namespace }}.svc.cluster.local:{{ .Values.app.config.metrics.listenPort }}/metrics | grep -q "mongobouncer"
           echo "✓ Prometheus metrics endpoint successful"
           {{- end }}
           

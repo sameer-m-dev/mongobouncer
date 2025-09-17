@@ -201,6 +201,10 @@ func Connect(log *zap.Logger, metrics util.MetricsInterface, opts *options.Clien
 }
 
 func ConnectWithSessionManager(log *zap.Logger, metrics util.MetricsInterface, opts *options.ClientOptions, ping bool, sessionManager *SessionManager) (*Mongo, error) {
+	return ConnectWithDistributedCache(log, metrics, opts, ping, sessionManager, nil)
+}
+
+func ConnectWithDistributedCache(log *zap.Logger, metrics util.MetricsInterface, opts *options.ClientOptions, ping bool, sessionManager *SessionManager, distributedCache *DistributedCache) (*Mongo, error) {
 	// timeout shouldn't be hit if ping == false, as Connect doesn't block the current goroutine
 	ctx, cancel := context.WithTimeout(context.Background(), pingTimeout)
 	defer cancel()
@@ -239,17 +243,32 @@ func ConnectWithSessionManager(log *zap.Logger, metrics util.MetricsInterface, o
 	go topologyMonitor(log, t)
 
 	rtCtx, rtCancel := context.WithCancel(context.Background())
-	cursors := newCursorCache()
+
+	// Create caches with distributed cache support if available
+	var cursors *cursorCache
+	var transactions *transactionCache
+	var sessions *SessionManager
+
+	if distributedCache != nil && distributedCache.IsEnabled() {
+		cursors = newCursorCacheWithDistributedCache(distributedCache)
+		transactions = newTransactionCacheWithDistributedCache(distributedCache, log)
+		if sessionManager != nil {
+			sessions = sessionManager
+		} else {
+			sessions = NewSessionManagerWithDistributedCache(log, distributedCache)
+		}
+	} else {
+		cursors = newCursorCache()
+		transactions = newTransactionCache()
+		if sessionManager != nil {
+			sessions = sessionManager
+		} else {
+			sessions = NewSessionManager(log)
+		}
+	}
+
 	cursors.setMetrics(metrics)
 	cursors.setLogger(log)
-
-	// Use provided session manager or create a new one
-	var sessions *SessionManager
-	if sessionManager != nil {
-		sessions = sessionManager
-	} else {
-		sessions = NewSessionManager(log)
-	}
 
 	m := Mongo{
 		log:             log,
@@ -258,7 +277,7 @@ func ConnectWithSessionManager(log *zap.Logger, metrics util.MetricsInterface, o
 		client:          c,
 		topology:        t,
 		cursors:         cursors,
-		transactions:    newTransactionCache(),
+		transactions:    transactions,
 		sessions:        sessions,
 		databaseName:    databaseName,
 		roundTripCtx:    rtCtx,

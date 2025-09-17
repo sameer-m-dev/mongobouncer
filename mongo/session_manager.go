@@ -48,10 +48,10 @@ type Session struct {
 
 // SessionManager manages MongoDB sessions and their lifecycle
 type SessionManager struct {
-	sessions map[string]*Session // Key: base64 encoded lsid
-	mutex    sync.RWMutex
-	logger   *zap.Logger
-	metrics  interface{} // Will be used for metrics later
+	sessions         map[string]*Session // Key: base64 encoded lsid
+	mutex            sync.RWMutex
+	logger           *zap.Logger
+	distributedCache *DistributedCache
 }
 
 // NewSessionManager creates a new session manager
@@ -59,6 +59,15 @@ func NewSessionManager(logger *zap.Logger) *SessionManager {
 	return &SessionManager{
 		sessions: make(map[string]*Session),
 		logger:   logger,
+	}
+}
+
+// NewSessionManagerWithDistributedCache creates a new session manager with distributed cache support
+func NewSessionManagerWithDistributedCache(logger *zap.Logger, distributedCache *DistributedCache) *SessionManager {
+	return &SessionManager{
+		sessions:         make(map[string]*Session),
+		logger:           logger,
+		distributedCache: distributedCache,
 	}
 }
 
@@ -97,6 +106,15 @@ func (sm *SessionManager) CreateSession(clientID string) (*Session, error) {
 	sm.sessions[sessionID] = session
 	sm.mutex.Unlock()
 
+	// Store in distributed cache if enabled
+	if sm.distributedCache != nil && sm.distributedCache.IsEnabled() {
+		if err := sm.distributedCache.StoreSession(session); err != nil {
+			sm.logger.Warn("Failed to store session in distributed cache",
+				zap.String("session_id", sessionID),
+				zap.Error(err))
+		}
+	}
+
 	sm.logger.Debug("Created new session",
 		zap.String("session_id", sessionID),
 		zap.String("client_id", clientID))
@@ -108,6 +126,7 @@ func (sm *SessionManager) CreateSession(clientID string) (*Session, error) {
 func (sm *SessionManager) GetSession(lsid []byte) (*Session, bool) {
 	sessionID := base64.StdEncoding.EncodeToString(lsid)
 
+	// First check local cache
 	sm.mutex.RLock()
 	session, exists := sm.sessions[sessionID]
 	sm.mutex.RUnlock()
@@ -118,6 +137,21 @@ func (sm *SessionManager) GetSession(lsid []byte) (*Session, bool) {
 		session.LastActivity = time.Now()
 		session.mutex.Unlock()
 		return session, true
+	}
+
+	// If not found locally and distributed cache is enabled, check distributed cache
+	if sm.distributedCache != nil && sm.distributedCache.IsEnabled() {
+		if distributedSession, found := sm.distributedCache.GetSession(sessionID); found {
+			// Store in local cache for faster access
+			sm.mutex.Lock()
+			sm.sessions[sessionID] = distributedSession
+			sm.mutex.Unlock()
+
+			sm.logger.Debug("Retrieved session from distributed cache",
+				zap.String("session_id", sessionID))
+
+			return distributedSession, true
+		}
 	}
 
 	return nil, false
@@ -142,6 +176,21 @@ func (sm *SessionManager) StartTransaction(session *Session, server driver.Serve
 	session.PinnedServer = server
 	session.PinnedConnection = connection
 	session.LastActivity = time.Now()
+
+	// Store transaction in distributed cache if enabled
+	if sm.distributedCache != nil && sm.distributedCache.IsEnabled() {
+		if err := sm.distributedCache.StoreTransaction(session.LsID, server, txnNumber); err != nil {
+			sm.logger.Warn("Failed to store transaction in distributed cache",
+				zap.String("session_id", session.ID),
+				zap.Error(err))
+		}
+		// Also update the session in distributed cache
+		if err := sm.distributedCache.StoreSession(session); err != nil {
+			sm.logger.Warn("Failed to update session in distributed cache",
+				zap.String("session_id", session.ID),
+				zap.Error(err))
+		}
+	}
 
 	sm.logger.Debug("Started transaction",
 		zap.String("session_id", session.ID),
@@ -251,6 +300,15 @@ func (sm *SessionManager) EndSession(session *Session) error {
 	sm.mutex.Lock()
 	delete(sm.sessions, session.ID)
 	sm.mutex.Unlock()
+
+	// Remove from distributed cache if enabled
+	if sm.distributedCache != nil && sm.distributedCache.IsEnabled() {
+		if err := sm.distributedCache.RemoveSession(session.ID); err != nil {
+			sm.logger.Warn("Failed to remove session from distributed cache",
+				zap.String("session_id", session.ID),
+				zap.Error(err))
+		}
+	}
 
 	sm.logger.Debug("Removed session from session manager",
 		zap.String("session_id", session.ID),

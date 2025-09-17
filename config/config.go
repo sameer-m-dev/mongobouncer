@@ -40,6 +40,28 @@ type Database struct {
 	// MongoDB client pool overrides (optional) - using shared config
 	MongoDBConfig util.MongoDBClientConfig `toml:",inline"`
 }
+
+// MetricsConfig represents the metrics configuration
+type MetricsConfig struct {
+	Enabled    bool   `toml:"enabled"`
+	ListenAddr string `toml:"listen_addr"`
+	ListenPort int    `toml:"listen_port"`
+}
+
+// SharedCacheConfig represents the distributed cache configuration
+type SharedCacheConfig struct {
+	Enabled           bool   `toml:"enabled"`
+	ListenAddr        string `toml:"listen_addr"`
+	ListenPort        int    `toml:"listen_port"`
+	CacheSizeBytes    string `toml:"cache_size_bytes"` // Kubernetes-style resource string (e.g., "1Gi", "512Mi")
+	SessionExpiry     string `toml:"session_expiry"`
+	TransactionExpiry string `toml:"transaction_expiry"`
+	CursorExpiry      string `toml:"cursor_expiry"`
+	Debug             bool   `toml:"debug"`
+	LabelSelector     string `toml:"label_selector"` // Kubernetes label selector for peer discovery
+	// Manual peer configuration for non-Kubernetes environments
+	PeerURLs []string `toml:"peer_urls"`
+}
 type MongobouncerConfig struct {
 	// Core server settings
 	ListenAddr string `toml:"listen_addr"`
@@ -51,15 +73,17 @@ type MongobouncerConfig struct {
 	PoolMode      string `toml:"pool_mode"`
 	MaxClientConn int    `toml:"max_client_conn"`
 
-	// Metrics
-	MetricsAddress string `toml:"metrics_address"`
-	MetricsEnabled bool   `toml:"metrics_enabled"`
+	// Metrics configuration
+	Metrics MetricsConfig `toml:"metrics"`
 
 	// Authentication settings
 	AuthEnabled bool `toml:"auth_enabled"`
 
 	// Wildcard/Regex credential passthrough settings
 	RegexCredentialPassthrough bool `toml:"regex_credential_passthrough"`
+
+	// Distributed cache settings
+	SharedCache SharedCacheConfig `toml:"shared_cache"`
 
 	// Network settings
 	Network string `toml:"network"`
@@ -85,16 +109,30 @@ func LoadConfig(configPath string, verbose bool) (*Config, error) {
 	// Set default values
 	config := &TOMLConfig{
 		Mongobouncer: MongobouncerConfig{
-			ListenAddr:                 "0.0.0.0",
-			ListenPort:                 27017,
-			LogLevel:                   "info",
-			Network:                    "tcp4",
-			PoolMode:                   "session",
-			MaxClientConn:              100,
-			MetricsAddress:             "0.0.0.0:9090",
-			MetricsEnabled:             true,
+			ListenAddr:    "0.0.0.0",
+			ListenPort:    27017,
+			LogLevel:      "info",
+			Network:       "tcp4",
+			PoolMode:      "session",
+			MaxClientConn: 100,
+			Metrics: MetricsConfig{
+				Enabled:    true,
+				ListenAddr: "0.0.0.0",
+				ListenPort: 9090,
+			},
 			AuthEnabled:                true,
 			RegexCredentialPassthrough: true,
+			SharedCache: SharedCacheConfig{
+				Enabled:           false,
+				ListenAddr:        "0.0.0.0",
+				ListenPort:        8080,
+				CacheSizeBytes:    "64Mi", // Kubernetes-style resource string
+				SessionExpiry:     "30m",
+				TransactionExpiry: "2m",
+				CursorExpiry:      "24h",
+				Debug:             false,
+				PeerURLs:          []string{}, // Empty for Kubernetes auto-discovery
+			},
 		},
 		Databases: make(map[string]interface{}),
 	}
@@ -129,8 +167,8 @@ func LoadConfig(configPath string, verbose bool) (*Config, error) {
 
 	// Create Metrics client
 	var metricsClient util.MetricsInterface
-	if config.Mongobouncer.MetricsEnabled {
-		baseMetricsClient, err := util.NewMetricsClient(logger, config.Mongobouncer.MetricsAddress)
+	if config.Mongobouncer.Metrics.Enabled {
+		baseMetricsClient, err := util.NewMetricsClient(logger, fmt.Sprintf("%s:%d", config.Mongobouncer.Metrics.ListenAddr, config.Mongobouncer.Metrics.ListenPort))
 		if err != nil {
 			logger.Warn("Failed to create metrics client", zap.Error(err))
 			// Continue without metrics
@@ -183,11 +221,17 @@ func parseRawConfig(rawConfig map[string]interface{}, config *TOMLConfig) error 
 		if maxClientConn, ok := mb["max_client_conn"].(int64); ok {
 			config.Mongobouncer.MaxClientConn = int(maxClientConn)
 		}
-		if metricsAddress, ok := mb["metrics_address"].(string); ok {
-			config.Mongobouncer.MetricsAddress = metricsAddress
-		}
-		if metricsEnabled, ok := mb["metrics_enabled"].(bool); ok {
-			config.Mongobouncer.MetricsEnabled = metricsEnabled
+		// Parse metrics subsection
+		if metrics, ok := mb["metrics"].(map[string]interface{}); ok {
+			if enabled, ok := metrics["enabled"].(bool); ok {
+				config.Mongobouncer.Metrics.Enabled = enabled
+			}
+			if listenAddr, ok := metrics["listen_addr"].(string); ok {
+				config.Mongobouncer.Metrics.ListenAddr = listenAddr
+			}
+			if listenPort, ok := metrics["listen_port"].(int); ok {
+				config.Mongobouncer.Metrics.ListenPort = listenPort
+			}
 		}
 		if network, ok := mb["network"].(string); ok {
 			config.Mongobouncer.Network = network
@@ -203,6 +247,42 @@ func parseRawConfig(rawConfig map[string]interface{}, config *TOMLConfig) error 
 		}
 		if regexCredentialPassthrough, ok := mb["regex_credential_passthrough"].(bool); ok {
 			config.Mongobouncer.RegexCredentialPassthrough = regexCredentialPassthrough
+		}
+
+		// Parse shared cache configuration
+		if sharedCache, ok := mb["shared_cache"].(map[string]interface{}); ok {
+			if enabled, ok := sharedCache["enabled"].(bool); ok {
+				config.Mongobouncer.SharedCache.Enabled = enabled
+			}
+			if listenAddr, ok := sharedCache["listen_addr"].(string); ok {
+				config.Mongobouncer.SharedCache.ListenAddr = listenAddr
+			}
+			if listenPort, ok := sharedCache["listen_port"].(int); ok {
+				config.Mongobouncer.SharedCache.ListenPort = listenPort
+			}
+			if cacheSizeBytes, ok := sharedCache["cache_size_bytes"].(string); ok {
+				config.Mongobouncer.SharedCache.CacheSizeBytes = cacheSizeBytes
+			}
+			if sessionExpiry, ok := sharedCache["session_expiry"].(string); ok {
+				config.Mongobouncer.SharedCache.SessionExpiry = sessionExpiry
+			}
+			if transactionExpiry, ok := sharedCache["transaction_expiry"].(string); ok {
+				config.Mongobouncer.SharedCache.TransactionExpiry = transactionExpiry
+			}
+			if cursorExpiry, ok := sharedCache["cursor_expiry"].(string); ok {
+				config.Mongobouncer.SharedCache.CursorExpiry = cursorExpiry
+			}
+			if debug, ok := sharedCache["debug"].(bool); ok {
+				config.Mongobouncer.SharedCache.Debug = debug
+			}
+			if peerURLs, ok := sharedCache["peer_urls"].([]interface{}); ok {
+				config.Mongobouncer.SharedCache.PeerURLs = make([]string, len(peerURLs))
+				for i, url := range peerURLs {
+					if urlStr, ok := url.(string); ok {
+						config.Mongobouncer.SharedCache.PeerURLs[i] = urlStr
+					}
+				}
+			}
 		}
 
 		// Parse MongoDB client config fields
@@ -646,4 +726,14 @@ func (c *Config) GetAuthEnabled() bool {
 // GetRegexCredentialPassthrough returns whether regex credential passthrough is enabled
 func (c *Config) GetRegexCredentialPassthrough() bool {
 	return c.tomlConfig.Mongobouncer.RegexCredentialPassthrough
+}
+
+// GetSharedCacheConfig returns the shared cache configuration
+func (c *Config) GetSharedCacheConfig() SharedCacheConfig {
+	return c.tomlConfig.Mongobouncer.SharedCache
+}
+
+// GetMetricsAddress returns the metrics address in the old format for backward compatibility
+func (c *Config) GetMetricsAddress() string {
+	return fmt.Sprintf("%s:%d", c.tomlConfig.Mongobouncer.Metrics.ListenAddr, c.tomlConfig.Mongobouncer.Metrics.ListenPort)
 }

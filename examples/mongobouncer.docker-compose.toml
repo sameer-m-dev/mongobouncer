@@ -7,9 +7,12 @@ listen_port = 27017
 log_level = "debug"
 pool_mode = "statement"
 max_client_conn = 0
-metrics_enabled = true
-metrics_address = "localhost:9090"
 auth_enabled = false
+
+[mongobouncer.metrics]
+enabled = true
+listen_addr = "0.0.0.0"
+listen_port = 9090
 
 # MongoDB 6 Replica Set Configuration
 [databases.app_prod_rs6]

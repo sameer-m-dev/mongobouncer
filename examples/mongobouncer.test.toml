@@ -11,20 +11,22 @@ pool_mode = "statement"
 max_client_conn = 0
 
 # MongoDB client pool settings (defaults for all databases)
-max_pool_size = 20              # MongoDB driver's internal pool size
-min_pool_size = 3               # MongoDB driver's minimum pool size
-max_conn_idle_time = "30s"      # How long to keep idle connections
-server_selection_timeout = "5s" # Server selection timeout
-connect_timeout = "5s"          # Connection establishment timeout
-socket_timeout = "30s"          # Socket operation timeout
-heartbeat_interval = "10s"      # Heartbeat frequency
-auth_enabled = false
-regex_credential_passthrough = false
+max_pool_size = 20                  # MongoDB driver's internal pool size
+min_pool_size = 3                   # MongoDB driver's minimum pool size
+max_conn_idle_time = "30s"          # How long to keep idle connections
+server_selection_timeout = "5s"     # Server selection timeout
+connect_timeout = "5s"              # Connection establishment timeout
+socket_timeout = "30s"              # Socket operation timeout
+heartbeat_interval = "10s"          # Heartbeat frequency
+auth_enabled = true
+regex_credential_passthrough = true
 topology = "sharded"
 
 # Prometheus metrics (optional but recommended)
-metrics_address = "0.0.0.0:9090"
-metrics_enabled = true
+[mongobouncer.metrics]
+enabled = true
+listen_addr = "0.0.0.0"
+listen_port = 9090
 
 # Database connections - Configure these for your MongoDB setup
 # Application databases - wildcard route for all databases

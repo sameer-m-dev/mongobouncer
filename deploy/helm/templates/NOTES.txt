@@ -30,14 +30,14 @@ Internal connection string:
 {{- end }}
 
 3. Monitor MongoBouncer:
-{{- if .Values.monitoring.prometheus.enabled }}
+{{- if .Values.app.config.metrics.enabled }}
 
 Prometheus Metrics:
 {{- if eq .Values.service.type "ClusterIP" }}
-  kubectl --namespace {{ .Release.Namespace }} port-forward svc/{{ include "mongobouncer.fullname" . }} {{ .Values.monitoring.prometheus.port }}:{{ .Values.monitoring.prometheus.port }}
-  curl http://localhost:{{ .Values.monitoring.prometheus.port }}{{ .Values.monitoring.prometheus.path }}
+  kubectl --namespace {{ .Release.Namespace }} port-forward svc/{{ include "mongobouncer.fullname" . }} {{ .Values.app.config.metrics.listenPort }}:{{ .Values.app.config.metrics.listenPort }}
+  curl http://localhost:{{ .Values.app.config.metrics.listenPort }}/metrics
 {{- else }}
-  curl http://$SERVICE_IP:{{ .Values.monitoring.prometheus.port }}{{ .Values.monitoring.prometheus.path }}
+  curl http://$SERVICE_IP:{{ .Values.app.config.metrics.listenPort }}/metrics
 {{- end }}
 {{- end }}
 

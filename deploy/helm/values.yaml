@@ -50,6 +50,38 @@ app:
     ping: true
 
     # =====================================
+    # Metrics & Monitoring (Prometheus)
+    # =====================================
+    metrics:
+      enabled: true
+      listenAddr: "0.0.0.0"
+      listenPort: 9090
+      serviceMonitor:
+        enabled: true
+        interval: "30s"
+        scrapeTimeout: "10s"
+        path: "/metrics"
+        additionalLabels: {}
+        annotations: {}
+
+    # =====================================
+    # Distributed Cache Configuration
+    # =====================================
+    sharedCache:
+      enabled: false # Enable distributed cache for Kubernetes scaling
+      listenAddr: "0.0.0.0" # Listen address for groupcache peer communication
+      listenPort: 8080 # Listen port for groupcache peer communication
+      cacheSizeBytes: "128Mi" # Kubernetes-style resource string (e.g., "1Gi", "512Mi", "256Mi")
+      sessionExpiry: "30m" # Session expiration duration
+      transactionExpiry: "2m" # Transaction expiration duration
+      cursorExpiry: "24h" # Cursor expiration duration
+      debug: false # Enable debug logging for cache operations
+      # Manual peer configuration for non-Kubernetes environments (leave empty for auto-discovery)
+      peerUrls: []
+      # Example for local testing:
+      # peerUrls: ["http://localhost:8081", "http://localhost:8082"]
+
+    # =====================================
     # Network Settings
     # =====================================
     network: "tcp4" # tcp4, tcp6, unix
@@ -162,28 +194,24 @@ serviceAccount:
   # The name of the service account to use.
   name: ""
 
+# RBAC configuration for distributed cache peer discovery
+rbac:
+  # Specifies whether RBAC resources should be created
+  create: true
+  # Role for pod discovery (required when sharedCache.enabled is true)
+  role:
+    create: true
+    name: ""
+  # RoleBinding for pod discovery
+  roleBinding:
+    create: true
+    name: ""
+
 # Pod disruption budget
 podDisruptionBudget:
   enabled: true
   minAvailable: 1
   # maxUnavailable: 50%
-
-# Monitoring configuration
-monitoring:
-  # Prometheus metrics
-  prometheus:
-    enabled: true
-    address: "0.0.0.0:9090" # Metrics server address
-    port: 9090
-    path: "/metrics"
-    interval: "30s"
-
-  # ServiceMonitor for Prometheus Operator
-  serviceMonitor:
-    enabled: true
-    namespace: ""
-    additionalLabels: {}
-    annotations: {}
 
 # Extra environment variables
 extraEnvVars:

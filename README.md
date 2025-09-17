@@ -188,6 +188,7 @@ helm install mongobouncer ./deploy/helm/mongobouncer
 - ✅ **Dynamic Configuration**: Runtime configuration updates without restarts
 - ✅ **Prometheus Metrics**: Comprehensive monitoring and observability
 - ✅ **High Availability**: Graceful handling of MongoDB failovers and network issues
+- ✅ **Distributed Cache**: Kubernetes-scalable distributed caching for sessions and transactions
 
 **MongoDB Topology Support:**
 - **Standalone**: Single MongoDB instances
@@ -202,6 +203,45 @@ helm install mongobouncer ./deploy/helm/mongobouncer
 - **Cross-Database Transactions**: Seamless transaction flow across different databases
 - **Connection Pool Optimization**: Intelligent connection cleanup and resource management
 - **Global Session Management**: Unified session state across all database handlers
+
+### Distributed Cache (Kubernetes Scalability)
+
+MongoBouncer includes a distributed caching system that enables horizontal scaling in Kubernetes environments by sharing session and transaction state across multiple pod replicas.
+
+**Key Features:**
+- 🚀 **Kubernetes Auto-Discovery**: Automatic peer discovery using Kubernetes API
+- 🔄 **Session Sharing**: Sessions created in one pod accessible from all pods
+- ⚡ **Transaction Consistency**: Transaction state shared across pod replicas
+- 🎯 **Manual Invalidation**: Remove completed transactions instead of waiting for TTL
+- 🧪 **Local Testing**: Support for manual peer configuration for development
+- 📊 **Resource Management**: Kubernetes-style resource parsing (e.g., "1Gi", "512Mi")
+
+**Configuration:**
+```toml
+[mongobouncer.shared_cache]
+enabled = true                     # Enable distributed cache
+groupcache_port = ":8080"          # Port for peer communication
+label_selector = "app=mongobouncer" # Kubernetes label selector
+cache_size_bytes = "128Mi"        # Cache size (Kubernetes format)
+session_expiry = "30m"            # Session expiration
+transaction_expiry = "2m"         # Transaction expiration
+cursor_expiry = "24h"             # Cursor expiration
+debug = false                     # Debug logging
+# peer_urls = []                  # Manual peers for local testing
+```
+
+**Deployment Modes:**
+- **Kubernetes Production**: Auto-discovery via Kubernetes API (recommended)
+- **Local Testing**: Manual peer URLs for development without Kubernetes
+- **Single-Node**: Falls back to in-memory caching when disabled
+
+**Benefits:**
+- **Horizontal Scaling**: Run multiple MongoBouncer replicas without state conflicts
+- **Session Continuity**: Sessions persist across pod restarts and scaling events
+- **Resource Efficiency**: Shared cache reduces memory usage across replicas
+- **Zero Configuration**: Automatic peer discovery in Kubernetes environments
+
+For detailed information about distributed cache implementation, see [DISTRIBUTED_CACHE.md](docs/DISTRIBUTED_CACHE.md).
 
 ### Authentication
 
@@ -327,6 +367,7 @@ This project builds upon and extends [mongobetween](https://github.com/coinbase/
 
 ## Documentation
 
+- [Distributed Cache](./docs/DISTRIBUTED_CACHE.md) - Kubernetes-scalable distributed caching system for sessions and transactions
 - [Session & Transaction Support](./docs/SESSION_TRANSACTION_SUPPORT.md) - Complete session and transaction support documentation, implementation details, and usage examples
 - [Authentication System](./docs/AUTHENTICATION.md) - Complete authentication system documentation, implementation details, and troubleshooting guide
 - [Comprehensive Tests](./docs/COMPREHENSIVE_TESTS.md) - Detailed testing documentation

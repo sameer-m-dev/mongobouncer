@@ -368,8 +368,10 @@ log_level = "info"
 pool_mode = "session"  # session, transaction, or statement
 default_pool_size = 20
 max_client_conn = 100
-metrics_address = "localhost:9090"
-metrics_enabled = true
+[mongobouncer.metrics]
+enabled = true
+listen_addr = "0.0.0.0"
+listen_port = 9090
 
 [databases]
 testdb = "mongodb://localhost:27017/testdb"

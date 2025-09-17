@@ -134,9 +134,10 @@ func TestMetricsConfig(t *testing.T) {
 	// Test that metrics are properly configured in TOML
 	tmpFile := "test_metrics.toml"
 	tomlContent := `
-[mongobouncer]
-metrics_address = "localhost:9090"
-metrics_enabled = true
+[mongobouncer.metrics]
+enabled = true
+listen_addr = "localhost"
+listen_port = 9090
 
 [databases.test_db]
 connection_string = "mongodb://localhost:27017/test"
@@ -150,8 +151,9 @@ connection_string = "mongodb://localhost:27017/test"
 	assert.NotNil(t, config)
 
 	mainConfig := config.GetMainConfig()
-	assert.Equal(t, "localhost:9090", mainConfig.MetricsAddress)
-	assert.True(t, mainConfig.MetricsEnabled)
+	assert.Equal(t, "localhost", mainConfig.Metrics.ListenAddr)
+	assert.Equal(t, 9090, mainConfig.Metrics.ListenPort)
+	assert.True(t, mainConfig.Metrics.Enabled)
 }
 
 func TestSanitizeURI(t *testing.T) {
@@ -493,10 +495,12 @@ func TestWildcardRouteLabelIntegration(t *testing.T) {
 	// Test the actual route configuration creation
 	tomlConfig := &TOMLConfig{
 		Mongobouncer: MongobouncerConfig{
-			ListenAddr:     "0.0.0.0",
-			ListenPort:     27017,
-			LogLevel:       "info",
-			MetricsEnabled: true,
+			ListenAddr: "0.0.0.0",
+			ListenPort: 27017,
+			LogLevel:   "info",
+			Metrics: MetricsConfig{
+				Enabled: true,
+			},
 		},
 		Databases: map[string]interface{}{
 			"*": map[string]interface{}{

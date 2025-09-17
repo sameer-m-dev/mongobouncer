@@ -147,9 +147,14 @@ Generate container ports
 - name: mongobouncer
   containerPort: {{ .Values.app.config.listenPort }}
   protocol: TCP
-{{- if .Values.monitoring.prometheus.enabled }}
+{{- if .Values.app.config.metrics.enabled }}
 - name: metrics
-  containerPort: {{ .Values.monitoring.prometheus.port }}
+  containerPort: {{ .Values.app.config.metrics.listenPort }}
+  protocol: TCP
+{{- end }}
+{{- if .Values.app.config.sharedCache.enabled }}
+- name: groupcache
+  containerPort: {{ .Values.app.config.sharedCache.listenPort }}
   protocol: TCP
 {{- end }}
 {{- end }}
@@ -162,10 +167,16 @@ Generate service ports
   port: {{ .Values.service.port }}
   targetPort: mongobouncer
   protocol: TCP
-{{- if .Values.monitoring.prometheus.enabled }}
+{{- if .Values.app.config.metrics.enabled }}
 - name: metrics
-  port: {{ .Values.monitoring.prometheus.port }}
+  port: {{ .Values.app.config.metrics.listenPort }}
   targetPort: metrics
+  protocol: TCP
+{{- end }}
+{{- if .Values.app.config.sharedCache.enabled }}
+- name: groupcache
+  port: {{ .Values.app.config.sharedCache.listenPort }}
+  targetPort: groupcache
   protocol: TCP
 {{- end }}
 {{- end }}
