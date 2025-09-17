@@ -50,6 +50,12 @@ app:
     ping: true
 
     # =====================================
+    # Network Settings
+    # =====================================
+    network: "tcp4" # tcp4, tcp6, unix
+    unlink: false # Remove unix socket file on exit
+
+    # =====================================
     # Metrics & Monitoring (Prometheus)
     # =====================================
     metrics:
@@ -65,7 +71,7 @@ app:
         annotations: {}
 
     # =====================================
-    # Distributed Cache Configuration (Beta Mode, use with caution)
+    # Distributed Cache Configuration (Beta Mode, use with caution. NOT PRODUCTION READY)
     # =====================================
     sharedCache:
       enabled: false # Enable distributed cache for Kubernetes scaling
@@ -87,12 +93,6 @@ app:
       connectionTimeout: "5s" # Connection timeout to other pods
       keepAlive: true # Enable TCP keep-alive
       keepAliveInterval: "30s" # Keep-alive interval
-
-    # =====================================
-    # Network Settings
-    # =====================================
-    network: "tcp4" # tcp4, tcp6, unix
-    unlink: false # Remove unix socket file on exit
 
   # Database connections - these should be configured per environment
   databases:
