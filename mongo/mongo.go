@@ -93,31 +93,35 @@ func createPoolMonitor(log *zap.Logger, metrics util.MetricsInterface, databaseN
 				if evt.PoolOptions != nil {
 					poolStats.maxPoolSize = int64(evt.PoolOptions.MaxPoolSize)
 				}
-				log.Debug("Connection pool created",
-					zap.String("database", databaseName),
-					zap.Int64("max_pool_size", poolStats.maxPoolSize))
+				// CHECK: Enabled if required
+				// log.Debug("Connection pool created",
+				// 	zap.String("database", databaseName),
+				// 	zap.Int64("max_pool_size", poolStats.maxPoolSize))
 
 			case "ConnectionCreated":
 				poolStats.totalConnections++
-				log.Debug("Connection created",
-					zap.String("database", databaseName),
-					zap.Int64("total_connections", poolStats.totalConnections))
+				// CHECK: Enabled if required
+				// log.Debug("Connection created",
+				// 	zap.String("database", databaseName),
+				// 	zap.Int64("total_connections", poolStats.totalConnections))
 
 			case "ConnectionClosed":
 				poolStats.totalConnections--
 				if poolStats.totalConnections < 0 {
 					poolStats.totalConnections = 0
 				}
-				log.Debug("Connection closed",
-					zap.String("database", databaseName),
-					zap.Int64("total_connections", poolStats.totalConnections))
+				// CHECK: Enabled if required
+				// log.Debug("Connection closed",
+				// 	zap.String("database", databaseName),
+				// 	zap.Int64("total_connections", poolStats.totalConnections))
 
 			case "ConnectionCheckedOut":
 				poolStats.activeConnections++
 				poolStats.checkoutCount++
-				log.Debug("Connection checked out",
-					zap.String("database", databaseName),
-					zap.Int64("active_connections", poolStats.activeConnections))
+				// CHECK: Enabled if required
+				// log.Debug("Connection checked out",
+				// 	zap.String("database", databaseName),
+				// 	zap.Int64("active_connections", poolStats.activeConnections))
 
 			case "ConnectionCheckedIn":
 				poolStats.activeConnections--
@@ -125,9 +129,10 @@ func createPoolMonitor(log *zap.Logger, metrics util.MetricsInterface, databaseN
 				if poolStats.activeConnections < 0 {
 					poolStats.activeConnections = 0
 				}
-				log.Debug("Connection checked in",
-					zap.String("database", databaseName),
-					zap.Int64("active_connections", poolStats.activeConnections))
+				// CHECK: Enabled if required
+				// log.Debug("Connection checked in",
+				// 	zap.String("database", databaseName),
+				// 	zap.Int64("active_connections", poolStats.activeConnections))
 
 			case "ConnectionCheckOutFailed":
 				poolStats.checkoutFailures++
@@ -147,11 +152,12 @@ func createPoolMonitor(log *zap.Logger, metrics util.MetricsInterface, databaseN
 					utilization = float64(poolStats.activeConnections) / float64(poolStats.maxPoolSize)
 				}
 
-				log.Debug("Updating MongoDB pool metrics",
-					zap.String("database", databaseName),
-					zap.Int64("active_connections", poolStats.activeConnections),
-					zap.Int64("max_pool_size", poolStats.maxPoolSize),
-					zap.Float64("utilization", utilization))
+				// CHECK: Enabled if required
+				// log.Debug("Updating MongoDB pool metrics",
+				// 	zap.String("database", databaseName),
+				// 	zap.Int64("active_connections", poolStats.activeConnections),
+				// 	zap.Int64("max_pool_size", poolStats.maxPoolSize),
+				// 	zap.Float64("utilization", utilization))
 
 				_ = metrics.Gauge("pool_active_connections", float64(poolStats.activeConnections), tags, 1)
 				_ = metrics.Gauge("pool_total_connections", float64(poolStats.totalConnections), tags, 1)
@@ -224,19 +230,17 @@ func ConnectWithDistributedCache(log *zap.Logger, metrics util.MetricsInterface,
 	opts = opts.SetPoolMonitor(poolMonitor)
 
 	var err error
-	log.Info("Connect")
 	c, err := mongo.Connect(ctx, opts)
 	if err != nil {
 		return nil, err
 	}
 
 	if ping {
-		log.Info("Ping")
 		err = c.Ping(ctx, readpref.Primary())
 		if err != nil {
 			return nil, err
 		}
-		log.Info("Pong")
+		log.Info("Ping Pong", zap.String("database", databaseName))
 	}
 
 	t := extractTopology(c)
@@ -464,7 +468,6 @@ func (m *Mongo) Close() {
 
 	m.roundTripCancel()
 
-	m.log.Info("Disconnect")
 	ctx, cancel := context.WithTimeout(context.Background(), disconnectTimeout)
 	defer cancel()
 	err := m.client.Disconnect(ctx)

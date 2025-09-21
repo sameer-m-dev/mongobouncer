@@ -39,7 +39,7 @@ var testConfigs = []TestConfig{
 	// MongoDB 6 Replica Set Tests (rs0)
 	{
 		Name:          "MongoDB 6 RS - AppUser Auth - Read app_prod_rs6",
-		ConnectionURI: "mongodb://appuser_rs6:apppass_rs6_123@localhost:27017/app_prod_rs6?&authSource=admin",
+		ConnectionURI: "mongodb://localhost:27017/app_prod_rs6?&authSource=admin",
 		Database:      "app_prod_rs6",
 		Collection:    "users",
 		ExpectedError: false,
@@ -48,7 +48,7 @@ var testConfigs = []TestConfig{
 	},
 	{
 		Name:          "MongoDB 6 RS - AppUser Auth - Write app_prod_rs6",
-		ConnectionURI: "mongodb://appuser_rs6:apppass_rs6_123@localhost:27017/app_prod_rs6?&authSource=admin",
+		ConnectionURI: "mongodb://localhost:27017/app_prod_rs6?&authSource=admin",
 		Database:      "app_prod_rs6",
 		Collection:    "users",
 		ExpectedError: false,
@@ -57,7 +57,7 @@ var testConfigs = []TestConfig{
 	},
 	{
 		Name:          "MongoDB 6 RS - ReadOnly Auth - Read app_prod_rs6",
-		ConnectionURI: "mongodb://readonly_rs6:readonly_rs6_123@localhost:27017/app_prod_rs6?&authSource=admin",
+		ConnectionURI: "mongodb://localhost:27017/app_prod_rs6?&authSource=admin",
 		Database:      "app_prod_rs6",
 		Collection:    "users",
 		ExpectedError: false,
@@ -66,7 +66,7 @@ var testConfigs = []TestConfig{
 	},
 	{
 		Name:          "MongoDB 6 RS - ReadOnly Auth - Write app_prod_rs6 (Should Fail)",
-		ConnectionURI: "mongodb://readonly_rs6:readonly_rs6_123@localhost:27017/app_prod_rs6?&authSource=admin",
+		ConnectionURI: "mongodb://localhost:27017/app_prod_rs6?&authSource=admin",
 		Database:      "app_prod_rs6",
 		Collection:    "users",
 		ExpectedError: true,
@@ -113,7 +113,7 @@ var testConfigs = []TestConfig{
 	// MongoDB 8 Replica Set Tests (rs1)
 	{
 		Name:          "MongoDB 8 RS - AppUser Auth - Read app_prod_rs8",
-		ConnectionURI: "mongodb://appuser_rs8:apppass_rs8_123@localhost:27017/app_prod_rs8?authSource=admin",
+		ConnectionURI: "mongodb://localhost:27017/app_prod_rs8?authSource=admin",
 		Database:      "app_prod_rs8",
 		Collection:    "users",
 		ExpectedError: false,
@@ -122,7 +122,7 @@ var testConfigs = []TestConfig{
 	},
 	{
 		Name:          "MongoDB 8 RS - AppUser Auth - Write app_prod_rs8",
-		ConnectionURI: "mongodb://appuser_rs8:apppass_rs8_123@localhost:27017/app_prod_rs8?authSource=admin",
+		ConnectionURI: "mongodb://localhost:27017/app_prod_rs8?authSource=admin",
 		Database:      "app_prod_rs8",
 		Collection:    "users",
 		ExpectedError: false,
@@ -131,7 +131,7 @@ var testConfigs = []TestConfig{
 	},
 	{
 		Name:          "MongoDB 8 RS - ReadOnly Auth - Read app_prod_rs8",
-		ConnectionURI: "mongodb://readonly_rs8:readonly_rs8_123@localhost:27017/app_prod_rs8?authSource=admin",
+		ConnectionURI: "mongodb://localhost:27017/app_prod_rs8?authSource=admin",
 		Database:      "app_prod_rs8",
 		Collection:    "users",
 		ExpectedError: false,
@@ -140,7 +140,7 @@ var testConfigs = []TestConfig{
 	},
 	{
 		Name:          "MongoDB 8 RS - ReadOnly Auth - Write app_prod_rs8 (Should Fail)",
-		ConnectionURI: "mongodb://readonly_rs8:readonly_rs8_123@localhost:27017/app_prod_rs8?authSource=admin",
+		ConnectionURI: "mongodb://localhost:27017/app_prod_rs8?authSource=admin",
 		Database:      "app_prod_rs8",
 		Collection:    "users",
 		ExpectedError: true,
@@ -149,7 +149,7 @@ var testConfigs = []TestConfig{
 	},
 	{
 		Name:          "MongoDB 8 RS - Analytics Auth - Read analytics_rs8",
-		ConnectionURI: "mongodb://analytics_rs8:analytics_rs8_123@localhost:27017/analytics_rs8?authSource=analytics_rs8",
+		ConnectionURI: "mongodb://localhost:27017/analytics_rs8?authSource=analytics_rs8",
 		Database:      "analytics_rs8",
 		Collection:    "events",
 		ExpectedError: false,
@@ -158,7 +158,7 @@ var testConfigs = []TestConfig{
 	},
 	{
 		Name:          "MongoDB 8 RS - Analytics Auth - Write analytics_rs8",
-		ConnectionURI: "mongodb://analytics_rs8:analytics_rs8_123@localhost:27017/analytics_rs8?authSource=analytics_rs8",
+		ConnectionURI: "mongodb://localhost:27017/analytics_rs8?authSource=analytics_rs8",
 		Database:      "analytics_rs8",
 		Collection:    "events",
 		ExpectedError: false,
@@ -167,7 +167,7 @@ var testConfigs = []TestConfig{
 	},
 	{
 		Name:          "MongoDB 8 RS - Analytics Auth - Read app_prod_rs8",
-		ConnectionURI: "mongodb://analytics_rs8:analytics_rs8_123@localhost:27017/app_prod_rs8?authSource=analytics_rs8",
+		ConnectionURI: "mongodb://localhost:27017/app_prod_rs8?authSource=analytics_rs8",
 		Database:      "app_prod_rs8",
 		Collection:    "users",
 		ExpectedError: false,
@@ -176,7 +176,7 @@ var testConfigs = []TestConfig{
 	},
 	{
 		Name:          "MongoDB 8 RS - Analytics Auth - Write app_prod_rs8 (Should Fail)",
-		ConnectionURI: "mongodb://analytics_rs8:analytics_rs8_123@localhost:27017/app_prod_rs8?authSource=analytics_rs8",
+		ConnectionURI: "mongodb://localhost:27017/app_prod_rs8?authSource=analytics_rs8",
 		Database:      "app_prod_rs8",
 		Collection:    "users",
 		ExpectedError: true,
@@ -187,7 +187,7 @@ var testConfigs = []TestConfig{
 	// MongoDB 6 Standalone Tests
 	{
 		Name:          "MongoDB 6 Standalone - AppUser Auth - Read standalone_v6_db",
-		ConnectionURI: "mongodb://appuser_s6:apppass_s6_123@localhost:27017/standalone_v6_db?authSource=admin",
+		ConnectionURI: "mongodb://localhost:27017/standalone_v6_db?authSource=admin&retryWrites=false&retryReads=false",
 		Database:      "standalone_v6_db",
 		Collection:    "documents",
 		ExpectedError: false,
@@ -196,7 +196,7 @@ var testConfigs = []TestConfig{
 	},
 	{
 		Name:          "MongoDB 6 Standalone - AppUser Auth - Write standalone_v6_db",
-		ConnectionURI: "mongodb://appuser_s6:apppass_s6_123@localhost:27017/standalone_v6_db?authSource=admin",
+		ConnectionURI: "mongodb://localhost:27017/standalone_v6_db?authSource=admin&retryWrites=false&retryReads=false",
 		Database:      "standalone_v6_db",
 		Collection:    "documents",
 		ExpectedError: false,
@@ -205,7 +205,7 @@ var testConfigs = []TestConfig{
 	},
 	{
 		Name:          "MongoDB 6 Standalone - ReadOnly Auth - Read standalone_v6_db",
-		ConnectionURI: "mongodb://readonly_s6:readonly_s6_123@localhost:27017/standalone_v6_db?authSource=admin",
+		ConnectionURI: "mongodb://localhost:27017/standalone_v6_db?authSource=admin",
 		Database:      "standalone_v6_db",
 		Collection:    "documents",
 		ExpectedError: false,
@@ -214,7 +214,7 @@ var testConfigs = []TestConfig{
 	},
 	{
 		Name:          "MongoDB 6 Standalone - ReadOnly Auth - Write standalone_v6_db (Should Fail)",
-		ConnectionURI: "mongodb://readonly_s6:readonly_s6_123@localhost:27017/standalone_v6_db?authSource=admin",
+		ConnectionURI: "mongodb://localhost:27017/standalone_v6_db?authSource=admin",
 		Database:      "standalone_v6_db",
 		Collection:    "documents",
 		ExpectedError: true,
@@ -223,7 +223,7 @@ var testConfigs = []TestConfig{
 	},
 	{
 		Name:          "MongoDB 6 Standalone - Analytics Auth - Read analytics_s6",
-		ConnectionURI: "mongodb://analytics_s6:analytics_s6_123@localhost:27017/analytics_s6?authSource=analytics_s6",
+		ConnectionURI: "mongodb://analytics_s6:analytics_s6_123@localhost:27017/analytics_s6?authSource=analytics_s6&retryWrites=false&retryReads=false",
 		Database:      "analytics_s6",
 		Collection:    "events",
 		ExpectedError: false,
@@ -232,7 +232,7 @@ var testConfigs = []TestConfig{
 	},
 	{
 		Name:          "MongoDB 6 Standalone - Analytics Auth - Write analytics_s6",
-		ConnectionURI: "mongodb://analytics_s6:analytics_s6_123@localhost:27017/analytics_s6?authSource=analytics_s6",
+		ConnectionURI: "mongodb://analytics_s6:analytics_s6_123@localhost:27017/analytics_s6?authSource=analytics_s6&retryWrites=false&retryReads=false",
 		Database:      "analytics_s6",
 		Collection:    "events",
 		ExpectedError: false,
@@ -259,7 +259,7 @@ var testConfigs = []TestConfig{
 	},
 	{
 		Name:          "MongoDB 6 Standalone - Test Database Access",
-		ConnectionURI: "mongodb://appuser_s6:apppass_s6_123@localhost:27017/test_v6_db?authSource=admin",
+		ConnectionURI: "mongodb://localhost:27017/test_v6_db?authSource=admin",
 		Database:      "test_v6_db",
 		Collection:    "test_data",
 		ExpectedError: false,
@@ -270,7 +270,7 @@ var testConfigs = []TestConfig{
 	// MongoDB 8 Standalone Tests
 	{
 		Name:          "MongoDB 8 Standalone - AppUser Auth - Read standalone_db",
-		ConnectionURI: "mongodb://appuser_s8:apppass_s8_123@localhost:27017/standalone_db?authSource=admin",
+		ConnectionURI: "mongodb://localhost:27017/standalone_db?authSource=admin",
 		Database:      "standalone_db",
 		Collection:    "documents",
 		ExpectedError: false,
@@ -279,7 +279,7 @@ var testConfigs = []TestConfig{
 	},
 	{
 		Name:          "MongoDB 8 Standalone - AppUser Auth - Write standalone_db",
-		ConnectionURI: "mongodb://appuser_s8:apppass_s8_123@localhost:27017/standalone_db?authSource=admin",
+		ConnectionURI: "mongodb://localhost:27017/standalone_db?authSource=admin&retryWrites=false&retryReads=false",
 		Database:      "standalone_db",
 		Collection:    "documents",
 		ExpectedError: false,
@@ -288,7 +288,7 @@ var testConfigs = []TestConfig{
 	},
 	{
 		Name:          "MongoDB 8 Standalone - ReadOnly Auth - Read standalone_db",
-		ConnectionURI: "mongodb://readonly_s8:readonly_s8_123@localhost:27017/standalone_db?authSource=admin",
+		ConnectionURI: "mongodb://localhost:27017/standalone_db?authSource=admin&retryWrites=false&retryReads=false",
 		Database:      "standalone_db",
 		Collection:    "documents",
 		ExpectedError: false,
@@ -297,7 +297,7 @@ var testConfigs = []TestConfig{
 	},
 	{
 		Name:          "MongoDB 8 Standalone - ReadOnly Auth - Write standalone_db (Should Fail)",
-		ConnectionURI: "mongodb://readonly_s8:readonly_s8_123@localhost:27017/standalone_db?authSource=admin",
+		ConnectionURI: "mongodb://localhost:27017/standalone_db?authSource=admin&retryWrites=false&retryReads=false",
 		Database:      "standalone_db",
 		Collection:    "documents",
 		ExpectedError: true,
@@ -306,7 +306,7 @@ var testConfigs = []TestConfig{
 	},
 	{
 		Name:          "MongoDB 8 Standalone - Analytics Auth - Read analytics_s8",
-		ConnectionURI: "mongodb://analytics_s8:analytics_s8_123@localhost:27017/analytics_s8?authSource=analytics_s8",
+		ConnectionURI: "mongodb://analytics_s8:analytics_s8_123@localhost:27017/analytics_s8?authSource=analytics_s8&retryWrites=false&retryReads=false",
 		Database:      "analytics_s8",
 		Collection:    "events",
 		ExpectedError: false,
@@ -315,7 +315,7 @@ var testConfigs = []TestConfig{
 	},
 	{
 		Name:          "MongoDB 8 Standalone - Analytics Auth - Write analytics_s8",
-		ConnectionURI: "mongodb://analytics_s8:analytics_s8_123@localhost:27017/analytics_s8?authSource=analytics_s8",
+		ConnectionURI: "mongodb://analytics_s8:analytics_s8_123@localhost:27017/analytics_s8?authSource=analytics_s8&retryWrites=false&retryReads=false",
 		Database:      "analytics_s8",
 		Collection:    "events",
 		ExpectedError: false,
@@ -342,7 +342,7 @@ var testConfigs = []TestConfig{
 	},
 	{
 		Name:          "MongoDB 8 Standalone - Test Database Access",
-		ConnectionURI: "mongodb://appuser_s8:apppass_s8_123@localhost:27017/test_db?authSource=admin",
+		ConnectionURI: "mongodb://localhost:27017/test_db?authSource=admin",
 		Database:      "test_db",
 		Collection:    "test_data",
 		ExpectedError: false,
@@ -353,7 +353,7 @@ var testConfigs = []TestConfig{
 	// Additional comprehensive tests
 	{
 		Name:          "MongoDB 6 RS - Cross Database Access",
-		ConnectionURI: "mongodb://appuser_rs6:apppass_rs6_123@localhost:27017/app_test_rs6?&authSource=admin",
+		ConnectionURI: "mongodb://localhost:27017/app_test_rs6?&authSource=admin",
 		Database:      "app_test_rs6",
 		Collection:    "test_users",
 		ExpectedError: false,
@@ -362,7 +362,7 @@ var testConfigs = []TestConfig{
 	},
 	{
 		Name:          "MongoDB 8 RS - Cross Database Access",
-		ConnectionURI: "mongodb://appuser_rs8:apppass_rs8_123@localhost:27017/app_test_rs8?authSource=admin",
+		ConnectionURI: "mongodb://localhost:27017/app_test_rs8?authSource=admin",
 		Database:      "app_test_rs8",
 		Collection:    "test_users",
 		ExpectedError: false,
@@ -371,7 +371,7 @@ var testConfigs = []TestConfig{
 	},
 	{
 		Name:          "MongoDB 6 RS - Collection Count",
-		ConnectionURI: "mongodb://appuser_rs6:apppass_rs6_123@localhost:27017/app_prod_rs6?&authSource=admin",
+		ConnectionURI: "mongodb://localhost:27017/app_prod_rs6?&authSource=admin",
 		Database:      "app_prod_rs6",
 		Collection:    "products",
 		ExpectedError: false,
@@ -380,7 +380,7 @@ var testConfigs = []TestConfig{
 	},
 	{
 		Name:          "MongoDB 8 RS - Collection Count",
-		ConnectionURI: "mongodb://appuser_rs8:apppass_rs8_123@localhost:27017/app_prod_rs8?authSource=admin",
+		ConnectionURI: "mongodb://localhost:27017/app_prod_rs8?authSource=admin",
 		Database:      "app_prod_rs8",
 		Collection:    "products",
 		ExpectedError: false,
@@ -389,7 +389,7 @@ var testConfigs = []TestConfig{
 	},
 	{
 		Name:          "MongoDB 6 Standalone - Collection Count",
-		ConnectionURI: "mongodb://appuser_s6:apppass_s6_123@localhost:27017/standalone_v6_db?authSource=admin",
+		ConnectionURI: "mongodb://localhost:27017/standalone_v6_db?authSource=admin",
 		Database:      "standalone_v6_db",
 		Collection:    "metadata",
 		ExpectedError: false,
@@ -398,7 +398,7 @@ var testConfigs = []TestConfig{
 	},
 	{
 		Name:          "MongoDB 8 Standalone - Collection Count",
-		ConnectionURI: "mongodb://appuser_s8:apppass_s8_123@localhost:27017/standalone_db?authSource=admin",
+		ConnectionURI: "mongodb://localhost:27017/standalone_db?authSource=admin",
 		Database:      "standalone_db",
 		Collection:    "metadata",
 		ExpectedError: false,
@@ -416,7 +416,7 @@ var testConfigs = []TestConfig{
 	},
 	{
 		Name:          "MongoDB 8 RS - Analytics Metrics Access",
-		ConnectionURI: "mongodb://analytics_rs8:analytics_rs8_123@localhost:27017/analytics_rs8?authSource=analytics_rs8",
+		ConnectionURI: "mongodb://localhost:27017/analytics_rs8?authSource=analytics_rs8",
 		Database:      "analytics_rs8",
 		Collection:    "metrics",
 		ExpectedError: false,
@@ -452,7 +452,7 @@ var testConfigs = []TestConfig{
 	},
 	{
 		Name:          "MongoDB 8 RS - Wrong Auth Source (Should Fail)",
-		ConnectionURI: "mongodb://analytics_rs8:analytics_rs8_123@localhost:27017/analytics_rs8?authSource=admin",
+		ConnectionURI: "mongodb://localhost:27017/analytics_rs8?authSource=admin",
 		Database:      "analytics_rs8",
 		Collection:    "events",
 		ExpectedError: true,

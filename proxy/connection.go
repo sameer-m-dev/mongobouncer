@@ -39,6 +39,7 @@ type connection struct {
 	// Client authentication fields
 	clientUsername             string // Username from client connection string
 	clientPassword             string // Password from client connection string
+	clientAuthSource           string // AuthSource from client connection string
 	authEnabled                bool   // Whether authentication is enabled
 	regexCredentialPassthrough bool   // Whether to use client credentials for wildcard/regex matches
 
@@ -49,6 +50,9 @@ type connection struct {
 
 	// Database usage tracking
 	databaseUsed string // The actual database that was used during this connection
+
+	// Credential passthrough tracking
+	isUsingCredentialPassthrough bool // Whether this connection is using credential passthrough
 }
 
 func handleConnection(log *zap.Logger, metrics util.MetricsInterface, address string, conn net.Conn, poolManager *pool.Manager, kill chan interface{}, databaseRouter *DatabaseRouter, authEnabled bool, regexCredentialPassthrough bool, mongodbDefaults util.MongoDBClientConfig, globalSessionManager *mongo.SessionManager, proxy *Proxy) string {
@@ -87,6 +91,7 @@ func handleConnection(log *zap.Logger, metrics util.MetricsInterface, address st
 	// We'll register with a placeholder database and update it when we know the actual database
 	if poolManager != nil {
 		configuredPoolMode := poolManager.GetDefaultMode()
+		// Initially register with "default" username - will be updated when we know the actual user
 		_, err := poolManager.RegisterClient(clientID, "default", "default", configuredPoolMode)
 		if err != nil {
 			log.Error("Failed to register client with pool manager", zap.Error(err))
@@ -311,19 +316,15 @@ func (c *connection) roundTrip(msg *mongo.Message, isMaster bool, tags []string)
 			c.log.Debug("Extracted appName from isMaster", zap.String("app_name", appName))
 
 			// Parse appName to get database, username, password
-			appDatabase, username, password, err := c.parseAppNameCredentials(appName)
+			appDatabase, username, password, authSource, err := c.parseAppNameCredentials(appName)
 			if err != nil {
 				c.log.Debug("AppName is not in credential format", zap.Error(err))
-				return nil, fmt.Errorf("invalid appName format: must be 'database:username:password', got: %s", appName)
-			}
-
-			if appDatabase == "" || username == "" || password == "" {
-				c.log.Debug("Empty credentials in appName", zap.String("app_name", appName))
-				return nil, fmt.Errorf("authentication required: username and password must be provided")
+				return nil, err
 			}
 
 			c.log.Debug("Parsed credentials from appName",
 				zap.String("app_database", appDatabase),
+				zap.String("auth_source", authSource),
 				zap.String("username", username),
 				zap.Bool("has_password", password != ""))
 
@@ -350,6 +351,7 @@ func (c *connection) roundTrip(msg *mongo.Message, isMaster bool, tags []string)
 				// For exact matches, validate credentials against route configuration
 				c.log.Debug("Exact match detected, validating credentials",
 					zap.String("app_database", appDatabase),
+					zap.String("auth_source", authSource),
 					zap.String("username", username))
 
 				if err := c.validateCredentialsAgainstDatabase(username, password, appDatabase, appDatabase); err != nil {
@@ -360,11 +362,13 @@ func (c *connection) roundTrip(msg *mongo.Message, isMaster bool, tags []string)
 				// For wildcard/regex matches, use credential passthrough
 				c.log.Debug("Wildcard/regex match detected, using credential passthrough",
 					zap.String("app_database", appDatabase),
+					zap.String("auth_source", authSource),
 					zap.String("username", username))
 
 				// Store credentials for downstream connection
 				c.clientUsername = username
 				c.clientPassword = password
+				c.clientAuthSource = authSource
 			}
 		}
 
@@ -420,28 +424,49 @@ func (c *connection) roundTrip(msg *mongo.Message, isMaster bool, tags []string)
 			return nil, fmt.Errorf("database %s is not supported: %v", targetDatabase, err)
 		}
 
-		// Cache the route config for this connection
-		if c.routeConfig == nil {
-			c.routeConfig = route
-			c.intendedDatabase = targetDatabase
-			c.log.Debug("Cached route config for connection",
-				zap.String("intended_database", targetDatabase),
-				zap.String("current_operation_db", databaseName))
-		}
+		// Update the route config for this operation
+		// Don't cache the route - each operation may target a different database
+		c.routeConfig = route
+		c.intendedDatabase = targetDatabase
+		c.log.Debug("Updated route config for operation",
+			zap.String("intended_database", targetDatabase),
+			zap.String("current_operation_db", databaseName))
 
 		// Check if we need to create a MongoDB client lazily or recreate a failed one
-		if c.regexCredentialPassthrough && c.isWildcardOrRegexMatch(targetDatabase, route) && c.clientUsername != "" {
-			c.log.Debug("Using credential passthrough for MongoDB client creation",
-				zap.String("username", c.clientUsername),
-				zap.String("target_database", targetDatabase))
+		// First check for credential-specific cached clients
 
-			// Create a new MongoDB client with the client's credentials
-			clientWithCredentials, err := c.createMongoClientWithCredentials(route, c.clientUsername, c.clientPassword)
-			if err != nil {
-				c.log.Error("Failed to create MongoDB client with client credentials", zap.Error(err))
-				return nil, fmt.Errorf("failed to create MongoDB client with client credentials: %v", err)
+		// Optimize credential passthrough check - extract credentials only when needed
+		useCredentialPassthrough := false
+
+		if c.regexCredentialPassthrough && c.clientUsername != "" {
+			// Check wildcard match first (cheaper operation)
+			isWildcardMatch := c.isWildcardOrRegexMatch(targetDatabase, route)
+
+			if isWildcardMatch {
+				useCredentialPassthrough = true
+			} else if route.MongoClient != nil {
+				// Only extract credentials if not wildcard and route has a client
+				routeUsername, routePassword, _ := c.extractCredentialsFromConnectionString(route.ConnectionString)
+				clientHasDifferentCredentials := (c.clientUsername != routeUsername || c.clientPassword != routePassword)
+				useCredentialPassthrough = clientHasDifferentCredentials
 			}
-			mongoClient = clientWithCredentials
+
+			c.log.Debug("Credential passthrough check",
+				zap.Bool("use_passthrough", useCredentialPassthrough),
+				zap.String("username", c.clientUsername),
+				zap.String("database", targetDatabase))
+		}
+
+		// Store credential passthrough state
+		c.isUsingCredentialPassthrough = useCredentialPassthrough
+
+		if useCredentialPassthrough {
+			// Get or create credential-specific client
+			var err error
+			mongoClient, err = c.getOrCreateCredentialClient(route)
+			if err != nil {
+				return nil, err
+			}
 		} else if route.MongoClient == nil {
 			c.log.Debug("MongoDB client is nil, creating lazily",
 				zap.String("target_database", targetDatabase))
@@ -454,15 +479,29 @@ func (c *connection) roundTrip(msg *mongo.Message, isMaster bool, tags []string)
 			}
 			mongoClient = lazyClient
 		} else {
-			// Use the existing route's MongoDB client
-			mongoClient = route.MongoClient
+			// Route has a client but we need to check if credential passthrough is needed
+			if useCredentialPassthrough {
+				var err error
+				mongoClient, err = c.getOrCreateCredentialClient(route)
+				if err != nil {
+					return nil, err
+				}
+			} else {
+				// Use the existing route's MongoDB client only when:
+				// 1. Credential passthrough is disabled OR
+				// 2. It's an exact match AND client has same credentials as the route
+				c.log.Debug("Using existing route MongoDB client",
+					zap.String("target_database", targetDatabase))
+				mongoClient = route.MongoClient
+			}
 		}
 	} else {
 		return nil, fmt.Errorf("mongo client not found for address: %s", c.address)
 	}
 
 	// Use pool manager for connection pooling, fallback to direct client if needed
-	if c.poolManager != nil {
+	// IMPORTANT: Skip pool when using credential passthrough to ensure correct authentication
+	if c.poolManager != nil && !c.isUsingCredentialPassthrough {
 		result, err := c.roundTripWithPool(msg, databaseName, mongoClient, tags)
 		// If the operation failed due to connection issues, try to recreate the client
 		if err != nil && c.isConnectionError(err) && route != nil && route.MongoClient != nil {
@@ -479,8 +518,16 @@ func (c *connection) roundTrip(msg *mongo.Message, isMaster bool, tags []string)
 		return result, err
 	}
 
-	// Fallback to direct client usage
-	c.log.Warn("Fallback to direct client usage", zap.String("address", c.address))
+	// Direct client usage (either no pool manager or credential passthrough)
+	if c.isUsingCredentialPassthrough && c.metrics != nil {
+		// Record metrics for credential passthrough usage
+		tags = append(tags, "connection_type:credential_passthrough")
+		_ = c.metrics.Incr("credential_passthrough_operation", []string{
+			fmt.Sprintf("database:%s", databaseName),
+			fmt.Sprintf("username:%s", c.clientUsername),
+		}, 1)
+	}
+
 	result, err := mongoClient.RoundTrip(msg, tags)
 
 	// If the operation failed due to connection issues, try to recreate the client
@@ -551,30 +598,37 @@ func (c *connection) roundTripWithPool(msg *mongo.Message, databaseName string, 
 		}
 	}
 
-	// Ensure client is registered with the correct database
-	// If this is the first operation for this database, re-register the client
+	// Optimize client registration - only re-register if database changes
 	if c.poolManager != nil {
-		// Check if client is registered for this database
+		needsReregistration := false
 		client, exists := c.poolManager.GetClient(c.clientID)
-		if !exists || client.Database != actualDatabaseName {
-			// Re-register client with the correct database
-			c.log.Debug("Re-registering client with correct database",
-				zap.String("client_id", c.clientID),
-				zap.String("database", actualDatabaseName))
 
-			// Unregister old client if exists
-			if exists {
-				c.poolManager.UnregisterClient(c.clientID)
-			}
+		if !exists {
+			needsReregistration = true
+		} else if client.Database != actualDatabaseName {
+			// Database changed, need to re-register
+			needsReregistration = true
+			c.poolManager.UnregisterClient(c.clientID)
+		}
 
+		if needsReregistration {
 			// Register with correct database using the configured pool mode
 			configuredPoolMode := c.poolManager.GetDefaultMode()
-			_, err := c.poolManager.RegisterClient(c.clientID, "default", actualDatabaseName, configuredPoolMode)
+			username := c.clientUsername
+			if username == "" {
+				username = "default"
+			}
+
+			_, err := c.poolManager.RegisterClient(c.clientID, username, actualDatabaseName, configuredPoolMode)
 			if err != nil {
-				c.log.Error("Failed to re-register client with pool manager", zap.Error(err))
-				// Return error instead of falling back to direct client usage
+				c.log.Error("Failed to register client with pool manager", zap.Error(err))
 				return nil, err
 			}
+
+			c.log.Debug("Client registered with pool",
+				zap.String("client_id", c.clientID),
+				zap.String("database", actualDatabaseName),
+				zap.String("username", username))
 		}
 	}
 
@@ -795,9 +849,6 @@ func (c *connection) extractHostFromRoute(targetRoute *RouteConfig) (string, str
 		return "", ""
 	}
 
-	c.log.Debug("Parsing connection string for host/port extraction",
-		zap.String("connection_string", targetRoute.ConnectionString))
-
 	// Parse the connection string to extract host and port
 	// Format: mongodb://[username:password@]host:port/database
 
@@ -824,12 +875,9 @@ func (c *connection) extractHostFromRoute(targetRoute *RouteConfig) (string, str
 	if slashIndex == -1 {
 		// No database specified, use the whole hostPortPart
 		hostPort := hostPortPart
-		c.log.Debug("Extracted host:port from connection string",
-			zap.String("host_port", hostPort))
 
 		// Extract host and port
 		host, port := c.extractHostAndPort(hostPort)
-
 		c.log.Debug("Parsed host and port",
 			zap.String("host", host),
 			zap.String("port", port))
@@ -839,9 +887,6 @@ func (c *connection) extractHostFromRoute(targetRoute *RouteConfig) (string, str
 
 	// Extract host:port part
 	hostPort := hostPortPart[:slashIndex]
-
-	c.log.Debug("Extracted host:port from connection string",
-		zap.String("host_port", hostPort))
 
 	// Extract host and port
 	host, port := c.extractHostAndPort(hostPort)
@@ -927,38 +972,26 @@ func (c *connection) extractAppNameFromMessage(msg *mongo.Message) (string, erro
 }
 
 // parseAppNameCredentials parses appName string to extract database, username and password
-// Supports both old format (username:password) and new format (database:username:password)
-func (c *connection) parseAppNameCredentials(appName string) (database, username, password string, err error) {
+// Supports both old format (username:password) and new format (database:username:password:authSource)
+func (c *connection) parseAppNameCredentials(appName string) (database, username, password, authSource string, err error) {
 	// Use utility function for parsing
 	appInfo := util.ParseAppName(appName)
 
-	// Handle new format: database:username:password
+	// Handle new format: database:username:password:authSource
 	if appInfo.Database != "" && appInfo.Username != "" && appInfo.Password != "" {
 		database = strings.TrimSpace(appInfo.Database)
 		username = strings.TrimSpace(appInfo.Username)
 		password = strings.TrimSpace(appInfo.Password)
+		authSource = strings.TrimSpace(appInfo.AuthSource)
 
 		if database == "" || username == "" || password == "" {
-			return "", "", "", fmt.Errorf("database, username and password cannot be empty")
+			return "", "", "", "", fmt.Errorf("database, username and password cannot be empty")
 		}
 
-		return database, username, password, nil
+		return database, username, password, authSource, nil
 	}
 
-	// Handle old format: username:password (for backward compatibility)
-	if appInfo.Username != "" && appInfo.Password != "" {
-		username = strings.TrimSpace(appInfo.Username)
-		password = strings.TrimSpace(appInfo.Password)
-
-		if username == "" || password == "" {
-			return "", "", "", fmt.Errorf("username and password cannot be empty")
-		}
-
-		// For old format, database is empty (will be determined from connection)
-		return "", username, password, nil
-	}
-
-	return "", "", "", fmt.Errorf("appName must be in format 'database:username:password' or 'username:password', got: %s", appName)
+	return "", "", "", "", fmt.Errorf("appName must be in format 'database:username:password:authSource' or 'database:username:password', got: %s", appName)
 }
 
 // validateCredentialsAgainstDatabase validates credentials against database configuration
@@ -1134,7 +1167,28 @@ func (c *connection) createLazyMongoClient(route *RouteConfig, targetDatabase st
 }
 
 // createMongoClientWithCredentials creates a MongoDB client using the client's credentials
-func (c *connection) createMongoClientWithCredentials(route *RouteConfig, username, password string) (*mongo.Mongo, error) {
+// Implements caching similar to createLazyMongoClient but for credential-specific clients
+func (c *connection) createMongoClientWithCredentials(route *RouteConfig) (*mongo.Mongo, error) {
+	// Create a unique key for this credential set including database name
+	// Format: "database:username:password" to handle no-auth connection
+	credentialKey := fmt.Sprintf("%s:%s", c.clientUsername, c.clientPassword)
+
+	// Initialize cache if needed
+	route.InitCredentialClientsCache()
+
+	// Check if we already have a client for these credentials
+	if cachedClient, exists := route.CredentialClients.Get(credentialKey); exists {
+		if mongoClient, ok := cachedClient.(*mongo.Mongo); ok {
+			c.log.Debug("Reusing existing MongoDB client for credentials",
+				zap.String("username", c.clientUsername),
+				zap.String("credential_key", credentialKey))
+			return mongoClient, nil
+		}
+	}
+
+	c.log.Debug("Creating new MongoDB client for credentials",
+		zap.String("username", c.clientUsername),
+		zap.String("credential_key", credentialKey))
 	// Extract host and port from the route's connection string
 	host, port := c.extractHostFromRoute(route)
 	if host == "" || port == "" {
@@ -1150,13 +1204,13 @@ func (c *connection) createMongoClientWithCredentials(route *RouteConfig, userna
 
 	// Build new connection string with client credentials
 	var newConnectionString string
-	if username != "" && password != "" {
+	if c.clientUsername != "" && c.clientPassword != "" {
 		// Use client credentials but preserve authSource and other options from route
-		newConnectionString = fmt.Sprintf("mongodb://%s:%s@%s:%s/", username, password, host, port)
+		newConnectionString = fmt.Sprintf("mongodb://%s:%s@%s:%s/%s", c.clientUsername, c.clientPassword, host, port, c.intendedDatabase)
 
 		// Add authSource if it was specified in the original route
-		if parsedURI.Query().Get("authSource") != "" {
-			newConnectionString += "?authSource=" + parsedURI.Query().Get("authSource")
+		if c.clientAuthSource != "" {
+			newConnectionString += "?authSource=" + c.clientAuthSource
 		} else {
 			// Default to admin authSource for client credentials
 			newConnectionString += "?authSource=admin"
@@ -1184,7 +1238,7 @@ func (c *connection) createMongoClientWithCredentials(route *RouteConfig, userna
 	}
 
 	c.log.Debug("Creating MongoDB client with client credentials",
-		zap.String("username", username),
+		zap.String("username", c.clientUsername),
 		zap.String("host", host),
 		zap.String("port", port),
 		zap.String("auth_source", parsedURI.Query().Get("authSource")),
@@ -1202,6 +1256,18 @@ func (c *connection) createMongoClientWithCredentials(route *RouteConfig, userna
 		return nil, fmt.Errorf("failed to create MongoDB client with client credentials: %v", err)
 	}
 
+	// Cache the client for future use with the same credentials
+	route.CredentialClients.Add(credentialKey, mongoClient)
+
+	// Register the client with the proxy for cleanup tracking
+	if c.proxy != nil {
+		c.proxy.RegisterMongoClient(credentialKey, mongoClient)
+	}
+
+	c.log.Info("Successfully created and cached MongoDB client with client credentials",
+		zap.String("username", c.clientUsername),
+		zap.String("credential_key", credentialKey))
+
 	return mongoClient, nil
 }
 
@@ -1215,4 +1281,64 @@ func sanitizeConnectionString(connStr string) string {
 		return strings.Replace(connStr, connInfo.Username+":"+connInfo.Password, sanitized, 1)
 	}
 	return connStr
+}
+
+// getOrCreateCredentialClient gets or creates a MongoDB client for specific credentials
+// This consolidates the duplicate logic for credential-specific client creation
+func (c *connection) getOrCreateCredentialClient(route *RouteConfig) (*mongo.Mongo, error) {
+	credentialKey := fmt.Sprintf("%s:%s", c.clientUsername, c.clientPassword)
+
+	// Initialize cache if needed
+	route.InitCredentialClientsCache()
+
+	// Check if we have a cached client for these credentials
+	if cachedClient, exists := route.CredentialClients.Get(credentialKey); exists {
+		if cachedMongoClient, ok := cachedClient.(*mongo.Mongo); ok {
+			c.log.Debug("Using cached MongoDB client for credentials",
+				zap.String("username", c.clientUsername),
+				zap.String("credential_key", credentialKey))
+
+			// Record cache hit metric
+			if c.metrics != nil {
+				_ = c.metrics.Incr("credential_client_cache_hit", []string{
+					fmt.Sprintf("database:%s", c.intendedDatabase),
+				}, 1)
+			}
+
+			return cachedMongoClient, nil
+		}
+	}
+
+	// Check connection limit before creating new client
+	if route.CredentialClients != nil && route.CredentialClients.Len() >= 250 {
+		c.log.Warn("Credential client limit reached, evicting oldest",
+			zap.Int("current_count", route.CredentialClients.Len()))
+	}
+
+	c.log.Debug("Creating new MongoDB client with client credentials",
+		zap.String("username", c.clientUsername),
+		zap.String("target_database", c.intendedDatabase))
+
+	// Create a new MongoDB client with the client's credentials
+	clientWithCredentials, err := c.createMongoClientWithCredentials(route)
+	if err != nil {
+		c.log.Error("Failed to create MongoDB client with client credentials", zap.Error(err))
+		return nil, fmt.Errorf("failed to create MongoDB client with client credentials: %v", err)
+	}
+
+	// Record cache miss metric
+	if c.metrics != nil {
+		_ = c.metrics.Incr("credential_client_cache_miss", []string{
+			fmt.Sprintf("database:%s", c.intendedDatabase),
+		}, 1)
+
+		// Record current cache size
+		if route.CredentialClients != nil {
+			_ = c.metrics.Gauge("credential_client_cache_size", float64(route.CredentialClients.Len()), []string{
+				fmt.Sprintf("database:%s", c.intendedDatabase),
+			}, 1)
+		}
+	}
+
+	return clientWithCredentials, nil
 }
