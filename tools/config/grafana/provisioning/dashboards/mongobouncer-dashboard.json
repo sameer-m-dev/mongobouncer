@@ -112,7 +112,7 @@
             "uid": "${DS_PROMETHEUS}"
           },
           "editorMode": "code",
-          "expr": "mongobouncer_up{job=\"$host\"}",
+          "expr": "mongobouncer_up{job=~\"$host\"}",
           "interval": "",
           "legendFormat": "{{job}}",
           "range": true,
@@ -566,7 +566,7 @@
             "uid": "${DS_PROMETHEUS}"
           },
           "editorMode": "code",
-          "expr": "sum by (database) (mongobouncer_sessions_active_total{database=~\"$database\",job=~\"$host\"})",
+          "expr": "sum by (database) (mongobouncer_sessions_active_total{database=~\"$database\", job=~\"$host\"})",
           "interval": "",
           "legendFormat": "{{database}}",
           "range": true,
@@ -998,7 +998,7 @@
             "uid": "${DS_PROMETHEUS}"
           },
           "editorMode": "code",
-          "expr": "sum(mongobouncer_connections_opened_total)",
+          "expr": "sum(mongobouncer_connections_opened_total{job=~\"$host\"})",
           "interval": "",
           "legendFormat": "Opened",
           "range": true,
@@ -1010,7 +1010,7 @@
             "uid": "${DS_PROMETHEUS}"
           },
           "editorMode": "code",
-          "expr": "sum(mongobouncer_connections_closed_total)",
+          "expr": "sum(mongobouncer_connections_closed_total{job=~\"$host\"})",
           "hide": false,
           "interval": "",
           "legendFormat": "Closed",
@@ -1121,7 +1121,7 @@
             "uid": "${DS_PROMETHEUS}"
           },
           "editorMode": "code",
-          "expr": "avg(rate(mongobouncer_connections_opened_total[5m]))",
+          "expr": "avg(rate(mongobouncer_connections_opened_total{job=~\"$host\"}[5m]))",
           "interval": "",
           "legendFormat": "Opened",
           "range": true,
@@ -1133,7 +1133,7 @@
             "uid": "${DS_PROMETHEUS}"
           },
           "editorMode": "code",
-          "expr": "avg(rate(mongobouncer_connections_closed_total[5m]))",
+          "expr": "avg(rate(mongobouncer_connections_closed_total{job=~\"$host\"}[5m]))",
           "hide": false,
           "interval": "",
           "legendFormat": "Closed",
@@ -1268,7 +1268,7 @@
             "uid": "${DS_PROMETHEUS}"
           },
           "editorMode": "code",
-          "expr": "sum(mongobouncer_connections_opened_total)",
+          "expr": "sum(mongobouncer_connections_opened_total{job=~\"$host\"})",
           "interval": "",
           "legendFormat": "__auto",
           "range": true,
@@ -1335,7 +1335,7 @@
             "uid": "${DS_PROMETHEUS}"
           },
           "editorMode": "code",
-          "expr": "sum(mongobouncer_open_connections_total)",
+          "expr": "sum(mongobouncer_open_connections_total{job=~\"$host\"})",
           "interval": "",
           "legendFormat": "__auto",
           "range": true,
@@ -1439,7 +1439,7 @@
             "uid": "${DS_PROMETHEUS}"
           },
           "editorMode": "code",
-          "expr": "sort_desc(sum by (database) (rate(mongobouncer_requests_total{database=~\"$database\"}[5m])))",
+          "expr": "sort_desc(sum by (database) (rate(mongobouncer_requests_total{database=~\"$database\", job=~\"$host\"}[5m])))",
           "interval": "",
           "legendFormat": "{{database}}",
           "range": true,
@@ -1545,7 +1545,7 @@
             "uid": "${DS_PROMETHEUS}"
           },
           "editorMode": "code",
-          "expr": "sort_desc(sum by (operation, database) (rate(mongobouncer_requests_total{database=~\"$database\"}[5m])))",
+          "expr": "sort_desc(sum by (operation, database) (rate(mongobouncer_requests_total{database=~\"$database\", job=~\"$host\"}[5m])))",
           "interval": "",
           "legendFormat": "{{operation}} - {{database}}",
           "range": true,
@@ -2079,7 +2079,7 @@
             "uid": "${DS_PROMETHEUS}"
           },
           "editorMode": "code",
-          "expr": "avg by (database) (histogram_quantile(0.95, rate(mongobouncer_pool_checkout_duration_seconds_bucket{database=~\"$database\",job=~\"$host\"}[5m])))",
+          "expr": "avg by (database) (histogram_quantile(0.95, rate(mongobouncer_pool_checkout_duration_seconds_bucket{database=~\"$database\", job=~\"$host\"}[5m])))",
           "interval": "",
           "legendFormat": "{{database}}",
           "range": true,
@@ -2180,7 +2180,7 @@
             "uid": "${DS_PROMETHEUS}"
           },
           "editorMode": "code",
-          "expr": "avg by (database) (histogram_quantile(0.95, rate(mongobouncer_checkout_connection_duration_seconds_bucket[5m])))",
+          "expr": "avg by (database) (histogram_quantile(0.95, rate(mongobouncer_checkout_connection_duration_seconds_bucket{job=~\"$host\"}[5m])))",
           "interval": "",
           "legendFormat": "{{database}}",
           "range": true,
@@ -2788,7 +2788,7 @@
             "uid": "${DS_PROMETHEUS}"
           },
           "editorMode": "code",
-          "expr": "avg(rate(mongobouncer_pool_events_total[5m]))",
+          "expr": "avg(rate(mongobouncer_pool_events_total{job=~\"$host\"}[5m]))",
           "interval": "",
           "legendFormat": "Rate/sec",
           "range": true,
@@ -2889,7 +2889,7 @@
             "uid": "${DS_PROMETHEUS}"
           },
           "editorMode": "code",
-          "expr": "avg(rate(mongobouncer_ismaster_commands_total[5m]))",
+          "expr": "avg(rate(mongobouncer_ismaster_commands_total{job=~\"$host\"}[5m]))",
           "interval": "",
           "legendFormat": "Rate/sec",
           "range": true,
