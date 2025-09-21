@@ -26,14 +26,15 @@ type DatabaseRouter struct {
 
 // RouteConfig represents configuration for routing to a specific MongoDB instance
 type RouteConfig struct {
-	DatabaseName     string
-	MongoClient      *mongo.Mongo
-	ConnectionString string
-	PoolMode         string
-	MaxConnections   int
-	Label            string
-	DatabaseConfig   *util.MongoDBClientConfig
-	clientMutex      sync.Mutex // Mutex for thread-safe lazy client creation
+	DatabaseName      string
+	MongoClient       *mongo.Mongo
+	ConnectionString  string
+	PoolMode          string
+	MaxConnections    int
+	Label             string
+	DatabaseConfig    *util.MongoDBClientConfig
+	clientMutex       sync.Mutex    // Mutex for thread-safe lazy client creation
+	CredentialClients *lruttl.Cache // LRU cache with TTL for credential-specific clients
 }
 
 // PatternRoute represents a pattern-based route
@@ -346,4 +347,12 @@ func (r *DatabaseRouter) Statistics() map[string]interface{} {
 	stats["routes"] = routes
 
 	return stats
+}
+
+// InitCredentialClientsCache initializes the credential clients cache if not already initialized
+func (r *RouteConfig) InitCredentialClientsCache() {
+	if r.CredentialClients == nil {
+		// Create LRU cache with TTL: max 500 credential clients, 30 minutes TTL
+		r.CredentialClients = lruttl.New(200, 30*time.Minute)
+	}
 }

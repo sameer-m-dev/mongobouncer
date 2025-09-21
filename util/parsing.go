@@ -75,29 +75,35 @@ func ParseConnectionString(connStr string) *ConnectionStringInfo {
 
 // AppNameInfo represents parsed app name information
 type AppNameInfo struct {
-	Database string
-	Username string
-	Password string
+	Database   string
+	Username   string
+	Password   string
+	AuthSource string
 }
 
-// ParseAppName parses app name in database:username:password format
-// Supports both old format (username:password) and new format (database:username:password)
+// ParseAppName parses app name in database:username:password:authSource format
 func ParseAppName(appName string) *AppNameInfo {
 	parts := strings.Split(appName, ":")
 	info := &AppNameInfo{}
 
-	if len(parts) == 3 {
-		// New format: database:username:password
+	if len(parts) == 4 {
+		// New format: database:username:password:authSource
 		info.Database = parts[0]
 		info.Username = parts[1]
 		info.Password = parts[2]
-	} else if len(parts) == 2 {
-		// Old format: username:password (for backward compatibility)
-		info.Username = parts[0]
-		info.Password = parts[1]
-	} else if len(parts) == 1 {
-		// Username only
-		info.Username = parts[0]
+		info.AuthSource = parts[3]
+		// Since mongo has a limit of 128 characters for the appName, we use the database name if the authSource is "use_db"
+		// This is a workaround to avoid the appName being too long.
+		if parts[3] == "use_db" {
+			info.AuthSource = info.Database
+		}
+	} else if len(parts) == 3 {
+		// Old format: database:username:password
+		info.Database = parts[0]
+		info.Username = parts[1]
+		info.Password = parts[2]
+		// Default to admin
+		info.AuthSource = "admin"
 	}
 
 	return info

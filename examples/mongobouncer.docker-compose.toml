@@ -7,7 +7,8 @@ listen_port = 27017
 log_level = "debug"
 pool_mode = "statement"
 max_client_conn = 0
-auth_enabled = false
+auth_enabled = true
+regex_credential_passthrough = true
 
 [mongobouncer.metrics]
 enabled = true
@@ -66,7 +67,10 @@ connection_string = "mongodb://analytics_s8:analytics_s8_123@host.docker.interna
 
 # Admin database routing - MongoDB 8 RS (port 27019)
 [databases.admin]
-connection_string = "mongodb://admin:admin123@host.docker.internal:27018/admin?authSource=admin"
+connection_string = "mongodb://admin:admin123@host.docker.internal:27018/admin?authSource=admin&replicaSet=rs0"
 
 [databases.testdb]
 connection_string = "mongodb://admin:admin123@host.docker.internal:27018/testdb?replicaSet=rs0&authSource=admin"
+
+[databases."*"]
+connection_string = "mongodb://admin:admin123@host.docker.internal:27018/admin?authSource=admin"

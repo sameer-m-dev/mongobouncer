@@ -470,9 +470,9 @@ func (p *ConnectionPool) Return(conn *PooledConnection) {
 	}
 
 	// No actual pooling needed - MongoDB driver handles everything
-	p.logger.Debug("Returned connection to pool",
-		zap.String("pool", p.name),
-		zap.String("connection_id", conn.ID))
+	// p.logger.Debug("Returned connection to pool",
+	// 	zap.String("pool", p.name),
+	// 	zap.String("connection_id", conn.ID))
 }
 
 // GetStats returns pool statistics
