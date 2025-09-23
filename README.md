@@ -282,7 +282,7 @@ app_db = { connection_string = "mongodb://appuser:apppass@host.docker.internal:2
 - **Efficient**: Authentication happens once during connection establishment
 - **Secure**: Credentials validated against database configuration before any operations
 
-For detailed information about the authentication system, implementation details, and troubleshooting, see [AUTHENTICATION.md](AUTHENTICATION.md).
+For detailed information about the authentication system, implementation details, and troubleshooting, see [AUTHENTICATION.md](./docs/AUTHENTICATION.md).
 
 ### Prometheus Metrics
 `mongobouncer` supports Prometheus metrics collection with a built-in HTTP endpoint for scraping. By default it serves metrics on `localhost:9090/metrics`. The following metrics are reported:
