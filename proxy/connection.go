@@ -839,7 +839,7 @@ func (c *connection) extractDatabaseName(op mongo.Operation) string {
 		c.log.Debug("Using connection context instead of default", zap.String("database", databaseName))
 	}
 
-	return databaseName
+	return util.NormalizeDatabaseName(databaseName)
 }
 
 // extractHostFromRoute extracts host and port from a route configuration
