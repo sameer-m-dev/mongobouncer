@@ -76,47 +76,52 @@ func (r *DatabaseRouter) AddRoute(pattern string, config *RouteConfig) error {
 	// Clear cache when routes are modified
 	r.routeCache.Clear()
 
+	// Normalize pattern to lowercase for case-insensitive handling
+	normalizedPattern := util.NormalizeDatabaseName(pattern)
+
 	// Handle wildcard route
-	if pattern == "*" {
+	if normalizedPattern == "*" {
 		r.wildcardRoute = config
 		r.logger.Info("Added wildcard route", zap.String("label", config.Label))
 		return nil
 	}
 
 	// Handle pattern routes
-	if strings.Contains(pattern, "*") {
+	if strings.Contains(normalizedPattern, "*") {
 		patternRoute := &PatternRoute{
-			Pattern:     pattern,
+			Pattern:     normalizedPattern,
 			RouteConfig: config,
 		}
 
 		// Determine pattern type
-		if strings.HasPrefix(pattern, "*") && strings.HasSuffix(pattern, "*") {
+		if strings.HasPrefix(normalizedPattern, "*") && strings.HasSuffix(normalizedPattern, "*") {
 			patternRoute.PatternType = ContainsMatch
-			patternRoute.Pattern = strings.Trim(pattern, "*")
-		} else if strings.HasPrefix(pattern, "*") {
+			patternRoute.Pattern = strings.Trim(normalizedPattern, "*")
+		} else if strings.HasPrefix(normalizedPattern, "*") {
 			patternRoute.PatternType = SuffixMatch
-			patternRoute.Pattern = strings.TrimPrefix(pattern, "*")
-		} else if strings.HasSuffix(pattern, "*") {
+			patternRoute.Pattern = strings.TrimPrefix(normalizedPattern, "*")
+		} else if strings.HasSuffix(normalizedPattern, "*") {
 			patternRoute.PatternType = PrefixMatch
-			patternRoute.Pattern = strings.TrimSuffix(pattern, "*")
+			patternRoute.Pattern = strings.TrimSuffix(normalizedPattern, "*")
 		} else {
 			// Handle wildcard patterns with * in the middle
 			patternRoute.PatternType = WildcardMatch
-			patternRoute.Pattern = pattern
+			patternRoute.Pattern = normalizedPattern
 		}
 
 		r.patternRoutes = append(r.patternRoutes, patternRoute)
 		r.logger.Info("Added pattern route",
 			zap.String("pattern", pattern),
+			zap.String("normalized_pattern", normalizedPattern),
 			zap.String("label", config.Label))
 		return nil
 	}
 
 	// Handle exact match
-	r.routes[pattern] = config
+	r.routes[normalizedPattern] = config
 	r.logger.Info("Added exact route",
 		zap.String("database", pattern),
+		zap.String("normalized_database", normalizedPattern),
 		zap.String("label", config.Label))
 	return nil
 }
@@ -148,8 +153,11 @@ func (r *DatabaseRouter) RemoveRoute(pattern string) {
 
 // GetRoute returns the route configuration for a given database name
 func (r *DatabaseRouter) GetRoute(databaseName string) (*RouteConfig, error) {
+	// Normalize database name to lowercase for case-insensitive handling
+	normalizedDbName := util.NormalizeDatabaseName(databaseName)
+
 	// Check cache first
-	if cachedRoute, found := r.routeCache.Get(databaseName); found {
+	if cachedRoute, found := r.routeCache.Get(normalizedDbName); found {
 		if route, ok := cachedRoute.(*RouteConfig); ok {
 			r.logger.Debug("Found cached route",
 				zap.String("database", databaseName),
@@ -165,18 +173,20 @@ func (r *DatabaseRouter) GetRoute(databaseName string) (*RouteConfig, error) {
 	var err error
 
 	// 1. Try exact match first
-	if exactRoute, ok := r.routes[databaseName]; ok {
+	if exactRoute, ok := r.routes[normalizedDbName]; ok {
 		route = exactRoute
 		r.logger.Debug("Found exact match route",
 			zap.String("database", databaseName),
+			zap.String("normalized_database", normalizedDbName),
 			zap.String("label", route.Label))
 	} else {
 		// 2. Try pattern matches
 		for _, pr := range r.patternRoutes {
-			if r.matchesPattern(databaseName, pr) {
+			if r.matchesPattern(normalizedDbName, pr) {
 				route = pr.RouteConfig
 				r.logger.Debug("Found pattern match route",
 					zap.String("database", databaseName),
+					zap.String("normalized_database", normalizedDbName),
 					zap.String("pattern", pr.Pattern),
 					zap.String("label", pr.RouteConfig.Label))
 				break
@@ -188,6 +198,7 @@ func (r *DatabaseRouter) GetRoute(databaseName string) (*RouteConfig, error) {
 			route = r.wildcardRoute
 			r.logger.Debug("Using wildcard route",
 				zap.String("database", databaseName),
+				zap.String("normalized_database", normalizedDbName),
 				zap.String("label", r.wildcardRoute.Label))
 		}
 	}
@@ -198,7 +209,7 @@ func (r *DatabaseRouter) GetRoute(databaseName string) (*RouteConfig, error) {
 	}
 
 	// Cache the result
-	r.routeCache.Add(databaseName, route)
+	r.routeCache.Add(normalizedDbName, route)
 	return route, nil
 }
 
@@ -283,17 +294,17 @@ func ExtractDatabaseName(msg *mongo.Message) (string, error) {
 	if collection != "" {
 		collectionInfo := util.ParseCollectionName(collection)
 		if collectionInfo.Database != "" {
-			return collectionInfo.Database, nil
+			return util.NormalizeDatabaseName(collectionInfo.Database), nil
 		}
 	}
 
 	// For operations targeting admin database
 	if msg.Op.IsIsMaster() {
-		return "admin", nil
+		return util.NormalizeDatabaseName("admin"), nil
 	}
 
 	// Default to admin for commands without explicit database
-	return "admin", nil
+	return util.NormalizeDatabaseName("admin"), nil
 }
 
 // RouteMessage routes a message to the appropriate MongoDB instance

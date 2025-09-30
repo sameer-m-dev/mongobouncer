@@ -352,6 +352,8 @@ func validateDatabaseNames(databases map[string]interface{}, logger *zap.Logger)
 	containsPatterns := make(map[string]string) // pattern -> connectionString
 
 	for dbName, dbConfigInterface := range databases {
+		// Normalize database name to lowercase for case-insensitive handling
+		normalizedDbName := util.NormalizeDatabaseName(dbName)
 		var connectionString string
 
 		// Extract connection string for comparison
@@ -396,7 +398,7 @@ func validateDatabaseNames(databases map[string]interface{}, logger *zap.Logger)
 		}
 
 		// Check for wildcard route conflicts
-		if dbName == "*" {
+		if normalizedDbName == "*" {
 			if existing, exists := wildcardPatterns["*"]; exists {
 				return fmt.Errorf("conflicting wildcard routes detected: both routes point to different connections (%s vs %s). Only one wildcard route (*) is allowed",
 					sanitizeURI(existing), sanitizeURI(connectionString))
@@ -406,51 +408,51 @@ func validateDatabaseNames(databases map[string]interface{}, logger *zap.Logger)
 		}
 
 		// Check for pattern-based conflicts
-		if strings.Contains(dbName, "*") {
+		if strings.Contains(normalizedDbName, "*") {
 			// Note: We don't check for conflicts with exact matches because exact matches
 			// always take precedence over pattern matches in the router
 
 			// Check for conflicts with other patterns
 			for pattern, patternConnStr := range prefixPatterns {
-				if patternsConflict(dbName, pattern) {
+				if patternsConflict(normalizedDbName, pattern) {
 					return fmt.Errorf("conflicting database patterns detected: '%s' and '%s' may match the same databases but point to different connections (%s vs %s)",
-						dbName, pattern, sanitizeURI(connectionString), sanitizeURI(patternConnStr))
+						normalizedDbName, pattern, sanitizeURI(connectionString), sanitizeURI(patternConnStr))
 				}
 			}
 			for pattern, patternConnStr := range suffixPatterns {
-				if patternsConflict(dbName, pattern) {
+				if patternsConflict(normalizedDbName, pattern) {
 					return fmt.Errorf("conflicting database patterns detected: '%s' and '%s' may match the same databases but point to different connections (%s vs %s)",
-						dbName, pattern, sanitizeURI(connectionString), sanitizeURI(patternConnStr))
+						normalizedDbName, pattern, sanitizeURI(connectionString), sanitizeURI(patternConnStr))
 				}
 			}
 			for pattern, patternConnStr := range containsPatterns {
-				if patternsConflict(dbName, pattern) {
+				if patternsConflict(normalizedDbName, pattern) {
 					return fmt.Errorf("conflicting database patterns detected: '%s' and '%s' may match the same databases but point to different connections (%s vs %s)",
-						dbName, pattern, sanitizeURI(connectionString), sanitizeURI(patternConnStr))
+						normalizedDbName, pattern, sanitizeURI(connectionString), sanitizeURI(patternConnStr))
 				}
 			}
 
 			// Categorize the pattern
-			if strings.HasPrefix(dbName, "*") && strings.HasSuffix(dbName, "*") {
-				containsPatterns[dbName] = connectionString
-			} else if strings.HasPrefix(dbName, "*") {
-				suffixPatterns[dbName] = connectionString
-			} else if strings.HasSuffix(dbName, "*") {
-				prefixPatterns[dbName] = connectionString
+			if strings.HasPrefix(normalizedDbName, "*") && strings.HasSuffix(normalizedDbName, "*") {
+				containsPatterns[normalizedDbName] = connectionString
+			} else if strings.HasPrefix(normalizedDbName, "*") {
+				suffixPatterns[normalizedDbName] = connectionString
+			} else if strings.HasSuffix(normalizedDbName, "*") {
+				prefixPatterns[normalizedDbName] = connectionString
 			} else {
-				containsPatterns[dbName] = connectionString
+				containsPatterns[normalizedDbName] = connectionString
 			}
 		} else {
 			// Exact match - no need to check for conflicts with patterns because exact matches
 			// always take precedence over pattern matches in the router
 
 			// Check for duplicate exact matches
-			if existing, exists := exactMatches[dbName]; exists {
+			if existing, exists := exactMatches[normalizedDbName]; exists {
 				return fmt.Errorf("duplicate database configuration detected: database '%s' is configured multiple times with different connections (%s vs %s)",
-					dbName, sanitizeURI(existing), sanitizeURI(connectionString))
+					normalizedDbName, sanitizeURI(existing), sanitizeURI(connectionString))
 			}
 
-			exactMatches[dbName] = connectionString
+			exactMatches[normalizedDbName] = connectionString
 		}
 	}
 
@@ -599,11 +601,13 @@ func (c *Config) GetDatabases() map[string]Database {
 	result := make(map[string]Database)
 
 	for name, dbConfig := range c.tomlConfig.Databases {
+		// Normalize database name to lowercase for case-insensitive handling
+		normalizedName := util.NormalizeDatabaseName(name)
 		switch v := dbConfig.(type) {
 		case string:
 			// Simple connection string format is no longer supported
 			// This will cause a validation error to help users understand the correct format
-			panic(fmt.Sprintf("invalid database configuration for '%s': simple string format is no longer supported. Please use structured format with 'connection_string' field. Example: %s = { connection_string = \"%s\" }", name, name, v))
+			panic(fmt.Sprintf("invalid database configuration for '%s': simple string format is no longer supported. Please use structured format with 'connection_string' field. Example: %s = { connection_string = \"%s\" }", normalizedName, normalizedName, v))
 		case map[string]interface{}:
 			// Structured format - convert to Database struct
 			db := Database{}
@@ -706,7 +710,7 @@ func (c *Config) GetDatabases() map[string]Database {
 				}
 				db.MongoDBConfig.Topology = &topology
 			}
-			result[name] = db
+			result[normalizedName] = db
 		}
 	}
 

@@ -1,6 +1,8 @@
 package util
 
-import "strings"
+import (
+	"strings"
+)
 
 // CollectionInfo represents parsed collection information
 type CollectionInfo struct {
@@ -18,7 +20,7 @@ func ParseCollectionName(fullCollectionName string) *CollectionInfo {
 	}
 
 	if len(parts) == 2 {
-		info.Database = parts[0]
+		info.Database = NormalizeDatabaseName(parts[0])
 		info.Collection = parts[1]
 	} else if len(parts) == 1 {
 		// If no database specified, use empty string
@@ -60,7 +62,7 @@ func ParseConnectionString(connStr string) *ConnectionStringInfo {
 			info.Host = hostDbParts[0]
 			if len(hostDbParts) > 1 {
 				dbOptionsParts := strings.SplitN(hostDbParts[1], "?", 2)
-				info.Database = dbOptionsParts[0]
+				info.Database = NormalizeDatabaseName(dbOptionsParts[0])
 				if len(dbOptionsParts) > 1 {
 					info.Options = dbOptionsParts[1]
 				}
@@ -88,7 +90,7 @@ func ParseAppName(appName string) *AppNameInfo {
 
 	if len(parts) == 4 {
 		// New format: database:username:password:authSource
-		info.Database = parts[0]
+		info.Database = NormalizeDatabaseName(parts[0])
 		info.Username = parts[1]
 		info.Password = parts[2]
 		info.AuthSource = parts[3]
@@ -99,7 +101,7 @@ func ParseAppName(appName string) *AppNameInfo {
 		}
 	} else if len(parts) == 3 {
 		// Old format: database:username:password
-		info.Database = parts[0]
+		info.Database = NormalizeDatabaseName(parts[0])
 		info.Username = parts[1]
 		info.Password = parts[2]
 		// Default to admin
@@ -107,4 +109,9 @@ func ParseAppName(appName string) *AppNameInfo {
 	}
 
 	return info
+}
+
+// NormalizeDatabaseName converts database name to lowercase for case-insensitive handling
+func NormalizeDatabaseName(dbName string) string {
+	return strings.ToLower(dbName)
 }
