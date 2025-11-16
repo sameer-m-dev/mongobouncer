@@ -34,6 +34,26 @@ topology = "sharded"                   # The topology of the upstream MongoDB cl
 ping = true
 
 # =====================================
+# Connection Refresh & Cleanup
+# =====================================
+# These settings help mitigate connection pool exhaustion by automatically
+# refreshing connections when the pool is exhausted or after a certain age/interval
+enable_connection_refresh = true                    # Enable automatic connection refresh
+max_connection_age = "1h"                           # Maximum age before refreshing connections (0 = disabled)
+connection_refresh_on_exhaustion = true             # Refresh connections when pool is exhausted (>=95% utilization)
+connection_refresh_interval = "30m"                 # Interval for periodic connection refresh (0 = disabled)
+#
+# Connection Refresh Use Cases:
+# - connection_refresh_on_exhaustion: Automatically refresh when pool hits 95%+ utilization
+#   This helps when connections are stuck or not being released properly
+# - max_connection_age: Refresh connections after a certain age to prevent stale connections
+#   Useful for long-running processes where connections may become stale
+# - connection_refresh_interval: Periodic refresh regardless of pool state
+#   Useful for proactive connection health management
+#
+# Note: These settings can be overridden per-database in the [databases] section
+
+# =====================================
 # Metrics & Monitoring (Prometheus)
 # =====================================
 [mongobouncer.metrics]
@@ -121,6 +141,10 @@ connection_string = "mongodb://analytics-cluster.mongodb.net:27017/analytics"
 max_pool_size = 50                                                            # Override default for high-traffic database
 min_pool_size = 10                                                            # Override default
 socket_timeout = "60s"                                                        # Longer timeout for this DB
+# Connection refresh settings (optional, inherits from global if not specified)
+enable_connection_refresh = true
+connection_refresh_on_exhaustion = true                                        # Refresh when pool exhausted
+max_connection_age = "2h"                                                      # Refresh every 2 hours
 
 # Example 3: Local development database (using individual fields)
 [databases.local_dev]

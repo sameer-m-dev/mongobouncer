@@ -18,9 +18,15 @@ server_selection_timeout = "5s"     # Server selection timeout
 connect_timeout = "5s"              # Connection establishment timeout
 socket_timeout = "30s"              # Socket operation timeout
 heartbeat_interval = "10s"          # Heartbeat frequency
-auth_enabled = true
+auth_enabled = false                # Disabled for testing with no-auth MongoDB
 regex_credential_passthrough = true
 topology = "sharded"
+
+# Connection refresh & leak prevention settings
+enable_connection_refresh = true                    # Enable automatic connection refresh
+max_connection_age = "1h"                           # Maximum age before refreshing connections (0 = disabled)
+connection_refresh_on_exhaustion = true             # Refresh connections when pool is exhausted (>=95% utilization)
+connection_refresh_interval = "30m"                 # Interval for periodic connection refresh (0 = disabled)
 
 # Prometheus metrics (optional but recommended)
 [mongobouncer.metrics]
@@ -36,7 +42,7 @@ connection_string = "mongodb://127.0.0.1:27023/default?retryWrites=false"
 topology = "single"
 
 [databases.mongobouncer_test]
-connection_string = "mongodb://localhost:27022/mongobouncer_test"
+connection_string = "mongodb://localhost:27022/mongobouncer_test?retryWrites=false"
 topology = "single"
 
 [databases.pool_test]

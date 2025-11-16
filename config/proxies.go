@@ -98,9 +98,28 @@ func (c *Config) Proxies(log *zap.Logger) ([]*proxy.Proxy, error) {
 	// Create database router for wildcard database support
 	databaseRouter := proxy.NewDatabaseRouter(log)
 
+	// Get global MongoDB config for connection refresh settings
+	globalMongoDBConfig := c.tomlConfig.Mongobouncer.MongoDBConfig
+
 	// Add database routes with precedence: exact match → wildcard match
 	databases := c.GetDatabases()
 	for dbName, dbConfig := range databases {
+		// Merge global and database-specific connection refresh config
+		refreshConfig := globalMongoDBConfig
+		// Override with database-specific settings if provided
+		if dbConfig.MongoDBConfig.EnableConnectionRefresh {
+			refreshConfig.EnableConnectionRefresh = dbConfig.MongoDBConfig.EnableConnectionRefresh
+		}
+		if dbConfig.MongoDBConfig.MaxConnectionAge > 0 {
+			refreshConfig.MaxConnectionAge = dbConfig.MongoDBConfig.MaxConnectionAge
+		}
+		if dbConfig.MongoDBConfig.ConnectionRefreshOnExhaustion {
+			refreshConfig.ConnectionRefreshOnExhaustion = dbConfig.MongoDBConfig.ConnectionRefreshOnExhaustion
+		}
+		if dbConfig.MongoDBConfig.ConnectionRefreshInterval > 0 {
+			refreshConfig.ConnectionRefreshInterval = dbConfig.MongoDBConfig.ConnectionRefreshInterval
+		}
+
 		// Create MongoDB client for this database
 		var mongoClient *mongo.Mongo
 		var err error
@@ -110,7 +129,7 @@ func (c *Config) Proxies(log *zap.Logger) ([]*proxy.Proxy, error) {
 			// Apply MongoDB client pool settings from config
 			opts = c.ApplyMongoDBClientSettings(opts, dbName, &dbConfig)
 			// Set ping to false to avoid startup failures - connections will be created lazily
-			mongoClient, err = mongo.ConnectWithDistributedCache(log, c.metrics, opts, false, globalSessionManager, distributedCache)
+			mongoClient, err = mongo.ConnectWithDistributedCacheAndRefreshConfig(log, c.metrics, opts, false, globalSessionManager, distributedCache, refreshConfig)
 			if err != nil {
 				log.Warn("Failed to connect to database during startup, will retry on first request",
 					zap.String("database", dbName),
@@ -125,7 +144,7 @@ func (c *Config) Proxies(log *zap.Logger) ([]*proxy.Proxy, error) {
 			// Apply MongoDB client pool settings from config
 			opts = c.ApplyMongoDBClientSettings(opts, dbName, &dbConfig)
 			// Set ping to false to avoid startup failures - connections will be created lazily
-			mongoClient, err = mongo.ConnectWithDistributedCache(log, c.metrics, opts, false, globalSessionManager, distributedCache)
+			mongoClient, err = mongo.ConnectWithDistributedCacheAndRefreshConfig(log, c.metrics, opts, false, globalSessionManager, distributedCache, refreshConfig)
 			if err != nil {
 				log.Warn("Failed to connect to database during startup, will retry on first request",
 					zap.String("database", dbName),

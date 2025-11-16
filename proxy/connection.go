@@ -103,6 +103,17 @@ func handleConnection(log *zap.Logger, metrics util.MetricsInterface, address st
 
 	// Ensure client is unregistered when connection closes
 	defer func() {
+		// Clean up transactions for this client before unregistering
+		// This ensures pinned connections are released when client disconnects
+		if globalSessionManager != nil {
+			cleanedCount := globalSessionManager.CleanupClientSessions(clientID)
+			if cleanedCount > 0 {
+				log.Info("Cleaned up client sessions on disconnect",
+					zap.String("client_id", clientID),
+					zap.Int("transactions_aborted", cleanedCount))
+			}
+		}
+
 		if poolManager != nil {
 			poolManager.UnregisterClient(clientID)
 			// Only decrement sessions if we actually registered them (i.e., if we determined the database name)
@@ -1146,8 +1157,25 @@ func (c *connection) createLazyMongoClient(route *RouteConfig, targetDatabase st
 	// Apply MongoDB client settings using the shared utility function
 	opts = util.ApplyMongoDBClientSettings(opts, targetDatabase, c.mongodbDefaults, route.DatabaseConfig, c.log)
 
+	// Merge refresh config from route config if available
+	refreshConfig := c.mongodbDefaults
+	if route.DatabaseConfig != nil {
+		if route.DatabaseConfig.EnableConnectionRefresh {
+			refreshConfig.EnableConnectionRefresh = route.DatabaseConfig.EnableConnectionRefresh
+		}
+		if route.DatabaseConfig.MaxConnectionAge > 0 {
+			refreshConfig.MaxConnectionAge = route.DatabaseConfig.MaxConnectionAge
+		}
+		if route.DatabaseConfig.ConnectionRefreshOnExhaustion {
+			refreshConfig.ConnectionRefreshOnExhaustion = route.DatabaseConfig.ConnectionRefreshOnExhaustion
+		}
+		if route.DatabaseConfig.ConnectionRefreshInterval > 0 {
+			refreshConfig.ConnectionRefreshInterval = route.DatabaseConfig.ConnectionRefreshInterval
+		}
+	}
+
 	// Create the MongoDB client without pinging (lazy creation)
-	mongoClient, err := mongo.ConnectWithSessionManager(c.log, c.metrics, opts, false, c.globalSessionManager) // Don't ping for lazy clients
+	mongoClient, err := mongo.ConnectWithDistributedCacheAndRefreshConfig(c.log, c.metrics, opts, false, c.globalSessionManager, nil, refreshConfig) // Don't ping for lazy clients
 	if err != nil {
 		return nil, fmt.Errorf("failed to create lazy MongoDB client: %v", err)
 	}
@@ -1250,8 +1278,25 @@ func (c *connection) createMongoClientWithCredentials(route *RouteConfig) (*mong
 	// Apply MongoDB client settings using the shared utility function
 	opts = util.ApplyMongoDBClientSettings(opts, c.intendedDatabase, c.mongodbDefaults, route.DatabaseConfig, c.log)
 
+	// Merge refresh config from route config if available
+	refreshConfig := c.mongodbDefaults
+	if route.DatabaseConfig != nil {
+		if route.DatabaseConfig.EnableConnectionRefresh {
+			refreshConfig.EnableConnectionRefresh = route.DatabaseConfig.EnableConnectionRefresh
+		}
+		if route.DatabaseConfig.MaxConnectionAge > 0 {
+			refreshConfig.MaxConnectionAge = route.DatabaseConfig.MaxConnectionAge
+		}
+		if route.DatabaseConfig.ConnectionRefreshOnExhaustion {
+			refreshConfig.ConnectionRefreshOnExhaustion = route.DatabaseConfig.ConnectionRefreshOnExhaustion
+		}
+		if route.DatabaseConfig.ConnectionRefreshInterval > 0 {
+			refreshConfig.ConnectionRefreshInterval = route.DatabaseConfig.ConnectionRefreshInterval
+		}
+	}
+
 	// Create the MongoDB client
-	mongoClient, err := mongo.ConnectWithSessionManager(c.log, c.metrics, opts, false, c.globalSessionManager) // Don't ping for dynamic clients
+	mongoClient, err := mongo.ConnectWithDistributedCacheAndRefreshConfig(c.log, c.metrics, opts, false, c.globalSessionManager, nil, refreshConfig) // Don't ping for dynamic clients
 	if err != nil {
 		return nil, fmt.Errorf("failed to create MongoDB client with client credentials: %v", err)
 	}

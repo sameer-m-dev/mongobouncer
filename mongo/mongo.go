@@ -69,6 +69,15 @@ type Mongo struct {
 	// Pool monitoring
 	poolStats   *PoolStats
 	healthStats *HealthStats
+
+	// Connection refresh settings
+	enableConnectionRefresh       bool
+	maxConnectionAge              time.Duration
+	connectionRefreshOnExhaustion bool
+	connectionRefreshInterval     time.Duration
+	lastConnectionRefresh         time.Time
+	clientCreatedAt               time.Time
+	refreshMutex                  sync.Mutex
 }
 
 func extractTopology(c *mongo.Client) *topology.Topology {
@@ -211,6 +220,10 @@ func ConnectWithSessionManager(log *zap.Logger, metrics util.MetricsInterface, o
 }
 
 func ConnectWithDistributedCache(log *zap.Logger, metrics util.MetricsInterface, opts *options.ClientOptions, ping bool, sessionManager *SessionManager, distributedCache *DistributedCache) (*Mongo, error) {
+	return ConnectWithDistributedCacheAndRefreshConfig(log, metrics, opts, ping, sessionManager, distributedCache, util.MongoDBClientConfig{})
+}
+
+func ConnectWithDistributedCacheAndRefreshConfig(log *zap.Logger, metrics util.MetricsInterface, opts *options.ClientOptions, ping bool, sessionManager *SessionManager, distributedCache *DistributedCache, refreshConfig util.MongoDBClientConfig) (*Mongo, error) {
 	// timeout shouldn't be hit if ping == false, as Connect doesn't block the current goroutine
 	ctx, cancel := context.WithTimeout(context.Background(), pingTimeout)
 	defer cancel()
@@ -274,22 +287,34 @@ func ConnectWithDistributedCache(log *zap.Logger, metrics util.MetricsInterface,
 	cursors.setMetrics(metrics)
 	cursors.setLogger(log)
 
+	now := time.Now()
 	m := Mongo{
-		log:             log,
-		metrics:         metrics,
-		opts:            opts,
-		client:          c,
-		topology:        t,
-		cursors:         cursors,
-		transactions:    transactions,
-		sessions:        sessions,
-		databaseName:    databaseName,
-		roundTripCtx:    rtCtx,
-		roundTripCancel: rtCancel,
-		poolStats:       poolStats,
-		healthStats:     healthStats,
+		log:                           log,
+		metrics:                       metrics,
+		opts:                          opts,
+		client:                        c,
+		topology:                      t,
+		cursors:                       cursors,
+		transactions:                  transactions,
+		sessions:                      sessions,
+		databaseName:                  databaseName,
+		roundTripCtx:                  rtCtx,
+		roundTripCancel:               rtCancel,
+		poolStats:                     poolStats,
+		healthStats:                   healthStats,
+		enableConnectionRefresh:       refreshConfig.EnableConnectionRefresh,
+		maxConnectionAge:              refreshConfig.MaxConnectionAge,
+		connectionRefreshOnExhaustion: refreshConfig.ConnectionRefreshOnExhaustion,
+		connectionRefreshInterval:     refreshConfig.ConnectionRefreshInterval,
+		lastConnectionRefresh:         now,
+		clientCreatedAt:               now,
 	}
 	go m.cacheMonitor()
+
+	// Start connection refresh monitor if enabled
+	if m.enableConnectionRefresh && (m.connectionRefreshInterval > 0 || m.maxConnectionAge > 0) {
+		go m.connectionRefreshMonitor()
+	}
 
 	return &m, nil
 }
@@ -356,6 +381,20 @@ func (m *Mongo) GetHealthStats() map[string]interface{} {
 func (m *Mongo) CheckHealth() error {
 	if m.healthStats == nil {
 		return fmt.Errorf("health stats not initialized")
+	}
+
+	// Check if pool is exhausted and refresh is enabled
+	if m.connectionRefreshOnExhaustion && m.isPoolExhausted() {
+		m.log.Warn("Connection pool exhausted, attempting to refresh connections",
+			zap.String("database", m.databaseName))
+		if refreshErr := m.RefreshConnections(); refreshErr != nil {
+			m.log.Warn("Failed to refresh connections during health check",
+				zap.String("database", m.databaseName),
+				zap.Error(refreshErr))
+		} else {
+			m.log.Info("Successfully refreshed connections during health check",
+				zap.String("database", m.databaseName))
+		}
 	}
 
 	start := time.Now()
@@ -440,9 +479,11 @@ func (m *Mongo) cacheGauge(name string, count float64) {
 
 func (m *Mongo) cacheMonitor() {
 	ticker := time.NewTicker(1 * time.Second)
-	sessionCleanupTicker := time.NewTicker(30 * time.Second) // Clean up sessions every 30 seconds
+	sessionCleanupTicker := time.NewTicker(30 * time.Second)    // Clean up sessions every 30 seconds
+	transactionCleanupTicker := time.NewTicker(1 * time.Minute) // Clean up abandoned transactions every minute
 	defer ticker.Stop()
 	defer sessionCleanupTicker.Stop()
+	defer transactionCleanupTicker.Stop()
 
 	for {
 		select {
@@ -450,9 +491,28 @@ func (m *Mongo) cacheMonitor() {
 			m.cacheGauge("cursors", float64(m.cursors.count()))
 			m.cacheGauge("transactions", float64(m.transactions.count()))
 			m.cacheGauge("sessions", float64(m.sessions.GetSessionCount()))
+			m.cacheGauge("pinned_connections", float64(m.sessions.GetPinnedConnectionCount()))
 		case <-sessionCleanupTicker.C:
 			// Clean up sessions that have been inactive for more than 5 minutes
 			m.sessions.CleanupInactiveSessions(5 * time.Minute)
+		case <-transactionCleanupTicker.C:
+			// Clean up abandoned transactions (active for more than 5 minutes)
+			// This prevents connection leaks from stuck transactions
+			cleanedCount := m.sessions.CleanupAbandonedTransactions(5 * time.Minute)
+			if cleanedCount > 0 {
+				m.log.Warn("Cleaned up abandoned transactions",
+					zap.String("database", m.databaseName),
+					zap.Int("count", cleanedCount))
+
+				// Update metrics
+				if m.metrics != nil {
+					tags := []string{fmt.Sprintf("database:%s", m.databaseName)}
+					// Increment counter for each cleaned transaction
+					for i := 0; i < cleanedCount; i++ {
+						_ = m.metrics.Incr("abandoned_transactions_cleaned", tags, 1)
+					}
+				}
+			}
 		}
 	}
 }
@@ -475,6 +535,169 @@ func (m *Mongo) Close() {
 	if err != nil {
 		m.log.Info("Error disconnecting", zap.Error(err))
 	}
+}
+
+// isPoolExhausted checks if the connection pool is exhausted
+func (m *Mongo) isPoolExhausted() bool {
+	if m.poolStats == nil {
+		return false
+	}
+
+	m.poolStats.mu.RLock()
+	defer m.poolStats.mu.RUnlock()
+
+	// Pool is exhausted if active connections >= max pool size and no idle connections
+	// We consider it exhausted if utilization is >= 95% to catch it before complete exhaustion
+	if m.poolStats.maxPoolSize > 0 {
+		utilization := float64(m.poolStats.activeConnections) / float64(m.poolStats.maxPoolSize)
+		return utilization >= 0.95
+	}
+
+	return false
+}
+
+// RefreshConnections refreshes the MongoDB client by disconnecting and reconnecting
+// This clears all connections in the pool and creates new ones
+func (m *Mongo) RefreshConnections() error {
+	m.refreshMutex.Lock()
+	defer m.refreshMutex.Unlock()
+
+	// Prevent too frequent refreshes (minimum 10 seconds between refreshes)
+	if time.Since(m.lastConnectionRefresh) < 10*time.Second {
+		return fmt.Errorf("connection refresh too frequent, last refresh was %v ago", time.Since(m.lastConnectionRefresh))
+	}
+
+	m.log.Info("Refreshing MongoDB connections",
+		zap.String("database", m.databaseName),
+		zap.Time("last_refresh", m.lastConnectionRefresh))
+
+	m.mu.Lock()
+	oldClient := m.client
+	oldOpts := m.opts
+	databaseName := m.databaseName
+	m.mu.Unlock()
+
+	if oldClient == nil {
+		return fmt.Errorf("client is nil, cannot refresh")
+	}
+
+	// Disconnect old client
+	ctx, cancel := context.WithTimeout(context.Background(), disconnectTimeout)
+	err := oldClient.Disconnect(ctx)
+	cancel()
+	if err != nil {
+		m.log.Warn("Error disconnecting old client during refresh", zap.Error(err))
+		// Continue anyway
+	}
+
+	// Create new client with same options
+	ctx, cancel = context.WithTimeout(context.Background(), pingTimeout)
+	defer cancel()
+
+	// Create new pool stats
+	poolStats := &PoolStats{}
+	healthStats := &HealthStats{}
+
+	// Create new pool monitor
+	poolMonitor := createPoolMonitor(m.log, m.metrics, databaseName, poolStats)
+	newOpts := oldOpts.SetPoolMonitor(poolMonitor)
+
+	newClient, err := mongo.Connect(ctx, newOpts)
+	if err != nil {
+		m.log.Error("Failed to create new client during refresh", zap.Error(err))
+		return fmt.Errorf("failed to create new client: %w", err)
+	}
+
+	// Update topology monitor
+	newTopology := extractTopology(newClient)
+	go topologyMonitor(m.log, newTopology)
+
+	// Update Mongo struct
+	m.mu.Lock()
+	m.client = newClient
+	m.topology = newTopology
+	m.opts = newOpts
+	m.poolStats = poolStats
+	m.healthStats = healthStats
+	m.lastConnectionRefresh = time.Now()
+	m.clientCreatedAt = time.Now()
+	m.mu.Unlock()
+
+	m.log.Info("Successfully refreshed MongoDB connections",
+		zap.String("database", m.databaseName),
+		zap.Time("refresh_time", m.lastConnectionRefresh))
+
+	// Update metrics
+	if m.metrics != nil {
+		tags := []string{fmt.Sprintf("database:%s", databaseName)}
+		_ = m.metrics.Incr("connection_refresh_success", tags, 1)
+	}
+
+	return nil
+}
+
+// connectionRefreshMonitor periodically checks if connections need to be refreshed
+func (m *Mongo) connectionRefreshMonitor() {
+	// Use the shorter interval for checking, or default to 1 minute
+	checkInterval := 1 * time.Minute
+	if m.connectionRefreshInterval > 0 && m.connectionRefreshInterval < checkInterval {
+		checkInterval = m.connectionRefreshInterval
+	}
+
+	ticker := time.NewTicker(checkInterval)
+	defer ticker.Stop()
+
+	for {
+		select {
+		case <-ticker.C:
+			if m.shouldRefreshConnections() {
+				reason := "periodic"
+				if m.maxConnectionAge > 0 && time.Since(m.clientCreatedAt) >= m.maxConnectionAge {
+					reason = "age-based"
+					m.log.Info("Age-based connection refresh triggered",
+						zap.String("database", m.databaseName),
+						zap.Duration("connection_age", time.Since(m.clientCreatedAt)))
+				} else if m.connectionRefreshInterval > 0 && time.Since(m.lastConnectionRefresh) >= m.connectionRefreshInterval {
+					reason = "interval-based"
+					m.log.Info("Interval-based connection refresh triggered",
+						zap.String("database", m.databaseName))
+				}
+
+				if err := m.RefreshConnections(); err != nil {
+					m.log.Warn("Failed to refresh connections",
+						zap.String("database", m.databaseName),
+						zap.String("reason", reason),
+						zap.Error(err))
+				}
+			}
+		case <-m.roundTripCtx.Done():
+			return
+		}
+	}
+}
+
+// shouldRefreshConnections determines if connections should be refreshed
+func (m *Mongo) shouldRefreshConnections() bool {
+	// Check if refresh is enabled
+	if !m.enableConnectionRefresh {
+		return false
+	}
+
+	// Check age-based refresh
+	if m.maxConnectionAge > 0 {
+		if time.Since(m.clientCreatedAt) >= m.maxConnectionAge {
+			return true
+		}
+	}
+
+	// Check interval-based refresh
+	if m.connectionRefreshInterval > 0 {
+		if time.Since(m.lastConnectionRefresh) >= m.connectionRefreshInterval {
+			return true
+		}
+	}
+
+	return false
 }
 
 // UpdatePoolMetricsForDatabase updates pool metrics for a specific database

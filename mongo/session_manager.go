@@ -43,6 +43,7 @@ type Session struct {
 	CurrentTxnNumber int64
 	PinnedServer     driver.Server
 	PinnedConnection driver.Connection
+	TransactionStartTime time.Time // Track when transaction started for timeout detection
 	mutex            sync.RWMutex
 }
 
@@ -175,6 +176,7 @@ func (sm *SessionManager) StartTransaction(session *Session, server driver.Serve
 	session.TransactionState = TransactionStateInProgress
 	session.PinnedServer = server
 	session.PinnedConnection = connection
+	session.TransactionStartTime = time.Now()
 	session.LastActivity = time.Now()
 
 	// Store transaction in distributed cache if enabled
@@ -415,6 +417,114 @@ func (sm *SessionManager) CleanupExpiredSessions(maxAge time.Duration) {
 			delete(sm.sessions, sessionID)
 		}
 	}
+}
+
+// CleanupAbandonedTransactions cleans up transactions that have been active for too long
+// This helps prevent connection leaks from stuck transactions
+func (sm *SessionManager) CleanupAbandonedTransactions(maxTransactionAge time.Duration) int {
+	sm.mutex.Lock()
+	defer sm.mutex.Unlock()
+
+	now := time.Now()
+	cleanedCount := 0
+
+	for sessionID, session := range sm.sessions {
+		session.mutex.Lock()
+		
+		// Check if transaction is active and has exceeded max age
+		if session.TransactionState == TransactionStateInProgress {
+			transactionAge := now.Sub(session.TransactionStartTime)
+			if transactionAge > maxTransactionAge {
+				sm.logger.Warn("Cleaning up abandoned transaction",
+					zap.String("session_id", sessionID),
+					zap.String("client_id", session.ClientID),
+					zap.Duration("transaction_age", transactionAge),
+					zap.Int64("txn_number", session.CurrentTxnNumber))
+
+				// Close pinned connection if it exists
+				if session.PinnedConnection != nil {
+					if err := session.PinnedConnection.Close(); err != nil {
+						sm.logger.Warn("Error closing pinned connection during cleanup",
+							zap.String("session_id", sessionID),
+							zap.Error(err))
+					}
+				}
+
+				// Reset transaction state
+				session.TransactionState = TransactionStateAborted
+				session.PinnedServer = nil
+				session.PinnedConnection = nil
+				session.CurrentTxnNumber = 0
+				cleanedCount++
+			}
+		}
+		
+		session.mutex.Unlock()
+	}
+
+	return cleanedCount
+}
+
+// CleanupClientSessions cleans up all sessions for a specific client
+// This is called when a client disconnects to ensure transactions are aborted
+func (sm *SessionManager) CleanupClientSessions(clientID string) int {
+	sm.mutex.Lock()
+	defer sm.mutex.Unlock()
+
+	cleanedCount := 0
+
+	for sessionID, session := range sm.sessions {
+		session.mutex.Lock()
+		
+		if session.ClientID == clientID {
+			// If there's an active transaction, abort it and close the connection
+			if session.TransactionState == TransactionStateInProgress {
+				sm.logger.Info("Aborting transaction on client disconnect",
+					zap.String("session_id", sessionID),
+					zap.String("client_id", clientID),
+					zap.Int64("txn_number", session.CurrentTxnNumber))
+
+				// Close pinned connection
+				if session.PinnedConnection != nil {
+					if err := session.PinnedConnection.Close(); err != nil {
+						sm.logger.Warn("Error closing pinned connection on client disconnect",
+							zap.String("session_id", sessionID),
+							zap.Error(err))
+					}
+				}
+
+				// Abort transaction
+				session.TransactionState = TransactionStateAborted
+				session.PinnedServer = nil
+				session.PinnedConnection = nil
+				cleanedCount++
+			}
+
+			// Mark session as ended
+			session.State = SessionStateEnded
+		}
+		
+		session.mutex.Unlock()
+	}
+
+	return cleanedCount
+}
+
+// GetPinnedConnectionCount returns the number of sessions with pinned connections
+func (sm *SessionManager) GetPinnedConnectionCount() int {
+	sm.mutex.RLock()
+	defer sm.mutex.RUnlock()
+
+	count := 0
+	for _, session := range sm.sessions {
+		session.mutex.RLock()
+		if session.PinnedConnection != nil {
+			count++
+		}
+		session.mutex.RUnlock()
+	}
+
+	return count
 }
 
 // GetActiveTransactionCount returns the number of sessions with active transactions

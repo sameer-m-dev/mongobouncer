@@ -18,4 +18,10 @@ type MongoDBClientConfig struct {
 	HeartbeatInterval      time.Duration             `toml:"heartbeat_interval"`
 	RetryWrites            *bool                     `toml:"retry_writes"`
 	Topology               *description.TopologyKind `toml:"topology"`
+	
+	// Connection refresh/cleanup settings
+	EnableConnectionRefresh bool          `toml:"enable_connection_refresh"` // Enable automatic connection refresh
+	MaxConnectionAge         time.Duration `toml:"max_connection_age"`        // Maximum age before refreshing connections (0 = disabled)
+	ConnectionRefreshOnExhaustion bool     `toml:"connection_refresh_on_exhaustion"` // Refresh connections when pool is exhausted
+	ConnectionRefreshInterval time.Duration `toml:"connection_refresh_interval"`     // Interval for periodic connection refresh (0 = disabled)
 }

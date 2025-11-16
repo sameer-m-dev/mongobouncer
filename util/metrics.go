@@ -251,6 +251,31 @@ var (
 		[]string{"database"},
 	)
 
+	// Connection leak prevention metrics
+	pinnedConnections = prometheus.NewGaugeVec(
+		prometheus.GaugeOpts{
+			Name: "mongobouncer_pinned_connections",
+			Help: "Number of connections pinned by active transactions",
+		},
+		[]string{"database"},
+	)
+
+	abandonedTransactionsCleaned = prometheus.NewCounterVec(
+		prometheus.CounterOpts{
+			Name: "mongobouncer_abandoned_transactions_cleaned_total",
+			Help: "Total number of abandoned transactions cleaned up",
+		},
+		[]string{"database"},
+	)
+
+	connectionRefreshSuccess = prometheus.NewCounterVec(
+		prometheus.CounterOpts{
+			Name: "mongobouncer_connection_refresh_success_total",
+			Help: "Total number of successful connection refreshes",
+		},
+		[]string{"database"},
+	)
+
 	ismasterCommandsTotal = prometheus.NewCounterVec(
 		prometheus.CounterOpts{
 			Name: "mongobouncer_ismaster_commands_total",
@@ -345,6 +370,10 @@ func NewMetricsClient(logger *zap.Logger, metricsAddr string) (*MetricsClient, e
 		poolCheckinTotal,
 		poolCheckoutFailuresTotal,
 		poolConnectionCheckoutDuration,
+		// Connection leak prevention metrics
+		pinnedConnections,
+		abandonedTransactionsCleaned,
+		connectionRefreshSuccess,
 	)
 
 	// Create HTTP server for metrics endpoint
@@ -442,6 +471,12 @@ func (m *MetricsClient) Incr(name string, tags []string, rate float64) error {
 	case "transaction_aborted":
 		database := parseDatabaseTag(tags)
 		transactionsAbortedTotal.WithLabelValues(database).Inc()
+	case "abandoned_transactions_cleaned":
+		database := parseDatabaseTag(tags)
+		abandonedTransactionsCleaned.WithLabelValues(database).Inc()
+	case "connection_refresh_success":
+		database := parseDatabaseTag(tags)
+		connectionRefreshSuccess.WithLabelValues(database).Inc()
 	default:
 		// Handle pool events
 		poolEventCounters.WithLabelValues(name).Inc()
@@ -487,6 +522,9 @@ func (m *MetricsClient) Gauge(name string, value float64, tags []string, rate fl
 	case "pool_checkout_failures_total":
 		database := parseDatabaseTag(tags)
 		poolCheckoutFailuresTotal.WithLabelValues(database).Set(value)
+	case "pinned_connections":
+		database := parseDatabaseTag(tags)
+		pinnedConnections.WithLabelValues(database).Set(value)
 	}
 
 	return nil

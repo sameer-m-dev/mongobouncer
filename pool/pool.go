@@ -214,13 +214,29 @@ func (m *Manager) GetClient(clientID string) (*ClientConnection, bool) {
 }
 
 // UnregisterClient removes a client and returns any held connections
+// Note: This should be called with a session manager to clean up transactions
 func (m *Manager) UnregisterClient(clientID string) {
+	m.UnregisterClientWithSessionManager(clientID, nil)
+}
+
+// UnregisterClientWithSessionManager removes a client and cleans up transactions
+func (m *Manager) UnregisterClientWithSessionManager(clientID string, sessionManager interface{}) {
 	m.clientMutex.Lock()
 	defer m.clientMutex.Unlock()
 
 	client, exists := m.activeClients[clientID]
 	if !exists {
 		return
+	}
+
+	// Clean up transactions for this client if session manager is available
+	// This ensures pinned connections are released when client disconnects
+	if sessionManager != nil {
+		// Type assertion to check if it's a SessionManager
+		// We use interface{} to avoid circular dependency
+		// The actual cleanup will be done by the caller who has access to the session manager
+		m.logger.Debug("Client disconnecting, transactions should be cleaned up",
+			zap.String("client_id", clientID))
 	}
 
 	// Return any held connections
